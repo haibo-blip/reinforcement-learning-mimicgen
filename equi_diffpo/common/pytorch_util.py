@@ -4,13 +4,17 @@ import torch
 import torch.nn as nn
 
 def dict_apply(
-        x: Dict[str, torch.Tensor], 
+        x: Dict[str, torch.Tensor],
         func: Callable[[torch.Tensor], torch.Tensor]
         ) -> Dict[str, torch.Tensor]:
     result = dict()
     for key, value in x.items():
-        if isinstance(value, dict):
+        if isinstance(value, dict) and 'shape' not in value:
+            # Only recurse if this dict doesn't have a 'shape' key (i.e., it's not a leaf observation dict)
             result[key] = dict_apply(value, func)
+        elif isinstance(value, list):
+            # Apply func only to items that have the 'to' method
+            result[key] = [func(item) if hasattr(item, 'to') else item for item in value]
         else:
             result[key] = func(value)
     return result
