@@ -9,7 +9,7 @@ shape_meta: ${task.shape_meta}
 exp_name: "maniflow_pc"
 
 task_name: stack_d1
-n_demo: 200
+n_demo: 100
 horizon: 16
 n_obs_steps: 2
 n_action_steps: 8
@@ -17,12 +17,11 @@ n_latency_steps: 0
 dataset_obs_steps: ${n_obs_steps}
 keypoint_visible_rate: 1.0
 obs_as_global_cond: True
-dataset_target: equi_diffpo.dataset.robomimic_replay_point_cloud_sym_dataset.RobomimicReplayPointCloudSymDataset
-dataset_path: data/robomimic/datasets/${task_name}/${task_name}_pc_abs.hdf5
+dataset_target: equi_diffpo.dataset.robomimic_replay_point_cloud_dataset.RobomimicReplayPointCloudDataset
+dataset_path: equi_diffpo/data/robomimic/datasets/${task_name}/${task_name}_voxel_abs.hdf5
 
 policy:
   _target_: equi_diffpo.policy.maniflow.maniflow_pointcloud_policy.ManiFlowTransformerPointcloudPolicy
-  shape_meta: ${shape_meta}
 
   # ManiFlow parameters
   horizon: ${horizon}
@@ -35,7 +34,7 @@ policy:
   n_layer: 12
   n_head: 8
   n_emb: 768
-  visual_cond_len: 1024
+  visual_cond_len: 256
   max_lang_cond_len: 1024
   qkv_bias: True
   qk_norm: True
@@ -56,10 +55,22 @@ policy:
   # Point cloud encoder parameters
   encoder_type: "DP3Encoder"
   crop_shape: null
-  encoder_output_dim: 512
+  encoder_output_dim: 128
   pcd_input_channel: 6  # xyz + rgb
   pcd_down_sample_num: 512
+  shape_meta: ${shape_meta}
 
+  use_pc_color: false
+  pointnet_type: "pointnet"
+  downsample_points: true
+  pointcloud_encoder_cfg:
+    in_channels: 6
+    out_channels: ${policy.encoder_output_dim}
+    use_layernorm: true
+    final_norm: layernorm # layernorm, none
+    normal_channel: false
+    num_points: ${policy.visual_cond_len} 
+    pointwise: true
 ema:
   _target_: equi_diffpo.model.diffusion.ema_model.EMAModel
   update_after_step: 0
@@ -69,14 +80,14 @@ ema:
   max_value: 0.9999
 
 dataloader:
-  batch_size: 64
+  batch_size: 32
   num_workers: 8
   shuffle: True
   pin_memory: True
   persistent_workers: True
 
 val_dataloader:
-  batch_size: 64
+  batch_size: 32
   num_workers: 8
   shuffle: False
   pin_memory: True

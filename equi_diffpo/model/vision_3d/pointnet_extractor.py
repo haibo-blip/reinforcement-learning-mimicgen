@@ -216,10 +216,11 @@ class DP3Encoder(nn.Module):
                  use_pc_color=False,
                  pointnet_type='pointnet',
                  downsample_points=False,
+                 state_keys=['robot0_eef_pos', 'robot0_eef_quat', 'robot0_gripper_qpos']
                  ):
         super().__init__()
         self.imagination_key = 'imagin_robot'
-        self.state_key = 'agent_pos'
+        self.state_keys = state_keys
         self.point_cloud_key = 'point_cloud'
         self.rgb_image_key = 'image'
         self.n_output_channels = out_channel
@@ -229,7 +230,7 @@ class DP3Encoder(nn.Module):
         
         self.use_imagined_robot = self.imagination_key in observation_space.keys()
         self.point_cloud_shape = observation_space[self.point_cloud_key]
-        self.state_shape = observation_space[self.state_key]
+        self.state_size = sum([observation_space[key][0] for key in self.state_keys])
         if self.use_imagined_robot:
             self.imagination_shape = observation_space[self.imagination_key]
         else:
@@ -244,7 +245,7 @@ class DP3Encoder(nn.Module):
             self.num_points = self.point_cloud_shape[1]
         cprint(f"[DP3Encoder] State MLP size: {state_mlp_size}", "yellow")
         cprint(f"[DP3Encoder] point cloud shape: {self.point_cloud_shape}", "yellow")
-        cprint(f"[DP3Encoder] state shape: {self.state_shape}", "yellow")
+        cprint(f"[DP3Encoder] state shape: {self.state_size}", "yellow")
         cprint(f"[DP3Encoder] imagination point shape: {self.imagination_shape}", "yellow")
         if self.downsample_points:
             cprint(f"[DP3Encoder] Downsampling enabled. Using {self.num_points} points from the point cloud.", "yellow")
@@ -271,7 +272,7 @@ class DP3Encoder(nn.Module):
         output_dim = state_mlp_size[-1]
 
         self.n_output_channels  += output_dim
-        self.state_mlp = nn.Sequential(*create_mlp(self.state_shape[0], output_dim, net_arch, state_mlp_activation_fn))
+        self.state_mlp = nn.Sequential(*create_mlp(self.state_size, output_dim, net_arch, state_mlp_activation_fn))
         self.pointwise = pointcloud_encoder_cfg.get('pointwise', False)
 
         cprint(f"[DP3Encoder] output dim: {self.n_output_channels}", "red")
@@ -291,7 +292,7 @@ class DP3Encoder(nn.Module):
 
         # points: B * 3 * (N + sum(Ni))
         pn_feat = self.extractor(points)    # B * out_channel or B * N * out_channel
-        state = observations[self.state_key]
+        state = torch.cat([observations[key] for key in self.state_keys], dim=-1)
         state_feat = self.state_mlp(state)  # B * 64 
         if len(pn_feat.shape) == 3:
             # each point has a feature

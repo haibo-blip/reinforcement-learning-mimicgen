@@ -180,6 +180,8 @@ class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
         result: must include "action" key
         """
         # normalize input
+        if 'agentview_image' in obs_dict:
+            del obs_dict['agentview_image']
         nobs = self.normalizer.normalize(obs_dict)
         if not self.use_pc_color:
             nobs['point_cloud'] = nobs['point_cloud'][..., :3]

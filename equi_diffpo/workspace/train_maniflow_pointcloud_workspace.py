@@ -160,7 +160,7 @@ class TrainManiFlowPointcloudWorkspace(BaseWorkspace):
         # training loop
         log_path = os.path.join(self.output_dir, 'logs.json.txt')
         with JsonLogger(log_path) as json_logger:
-            for epoch_idx in range(self.epoch, cfg.training.num_epochs):
+            for epoch_idx in range(self.epoch, int(cfg.training.num_epochs)):
                 step_log = dict()
                 # ========= train for this epoch ==========
                 train_losses = list()
@@ -175,8 +175,8 @@ class TrainManiFlowPointcloudWorkspace(BaseWorkspace):
                             train_sampling_batch = batch
 
                         # forward pass
-                        loss = self.model.compute_loss(batch)
-
+                        loss,loss_dict = self.model.compute_loss(batch,self.ema_model)
+                        loss = loss / cfg.training.gradient_accumulate_every
                         # backward pass
                         loss.backward()
 
@@ -200,7 +200,7 @@ class TrainManiFlowPointcloudWorkspace(BaseWorkspace):
                             'epoch': self.epoch,
                             'lr': lr_scheduler.get_last_lr()[0]
                         }
-
+                        step_log.update(loss_dict)
                         is_last_batch = (batch_idx == (len(train_dataloader)-1))
                         if not is_last_batch:
                             wandb_run.log(step_log, step=self.global_step)
@@ -227,7 +227,7 @@ class TrainManiFlowPointcloudWorkspace(BaseWorkspace):
                                 leave=False, mininterval=cfg.training.tqdm_interval_sec) as tepoch:
                             for batch_idx, batch in enumerate(tepoch):
                                 batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
-                                loss = policy.compute_loss(batch)
+                                loss,loss_dict = self.model.compute_loss(batch,self.ema_model)
                                 val_losses.append(loss.item())
                                 if (cfg.training.max_val_steps is not None) \
                                     and batch_idx >= (cfg.training.max_val_steps-1):

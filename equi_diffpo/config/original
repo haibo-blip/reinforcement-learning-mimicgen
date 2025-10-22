@@ -1,78 +1,76 @@
 defaults:
-  - _self_
-  - task: mimicgen_pc_abs
+  - robotwin_task: diverse_bottles_pick_pointcloud
 
-name: train_dp3
-_target_: equi_diffpo.workspace.train_dp3_workspace.TrainDP3Workspace
+name: train_maniflow_pointcloud_policy
 
-shape_meta: ${task.shape_meta}
+task_name: ${robotwin_task.name}
+shape_meta: ${robotwin_task.shape_meta}
 exp_name: "debug"
 
-task_name: stack_d1
-n_demo: 200
 horizon: 16
 n_obs_steps: 2
-n_action_steps: 8
+n_action_steps: 16
 n_latency_steps: 0
 dataset_obs_steps: ${n_obs_steps}
 keypoint_visible_rate: 1.0
 obs_as_global_cond: True
-dataset_target: equi_diffpo.dataset.robomimic_replay_point_cloud_dataset.RobomimicReplayPointCloudDataset
-dataset_path: equi_diffpo/data/robomimic/datasets/${task_name}/${task_name}_voxel_abs.hdf5
 
 policy:
-  _target_: equi_diffpo.policy.dp3.DP3
-  use_point_crop: true
-  condition_type: film
-  use_down_condition: true
-  use_mid_condition: true
-  use_up_condition: true
+  _target_: maniflow.policy.maniflow_pointcloud_policy.ManiFlowTransformerPointcloudPolicy
+  block_type: "DiTX"
+  n_layer: 12  # max 28
+  n_head: 8  # max 16
+  n_emb: 768 # max 1152
+  visual_cond_len: 128 # adjust according to the task
+  max_lang_cond_len: 1024 # maximum length of language tokens
+  qkv_bias: true
+  qk_norm: true
   
-  diffusion_step_embed_dim: 128
-  down_dims:
-  - 512
-  - 1024
-  - 2048
+  language_conditioned: false
+  pre_norm_modality: false
+
+  flow_batch_ratio: 0.75 
+  consistency_batch_ratio: 0.25
+
+  sample_t_mode_flow: "beta" # choose between beta or lognorm, both are performing well
+  sample_t_mode_consistency: "discrete" 
+  sample_dt_mode_consistency: "uniform"
+  sample_target_t_mode: "relative" # "relative", "absolute"
+  denoise_timesteps: 10
+
+  diffusion_timestep_embed_dim: 128
+  diffusion_target_t_embed_dim: 128
+
+  use_point_crop: true
   crop_shape:
   - 80
   - 80
-  encoder_output_dim: 64
+  encoder_type: "DP3Encoder"
+  encoder_output_dim: 128
   horizon: ${horizon}
-  kernel_size: 5
   n_action_steps: ${n_action_steps}
-  n_groups: 8
   n_obs_steps: ${n_obs_steps}
-
-  noise_scheduler:
-    _target_: diffusers.schedulers.scheduling_ddim.DDIMScheduler
-    num_train_timesteps: 100
-    beta_start: 0.0001
-    beta_end: 0.02
-    beta_schedule: squaredcos_cap_v2
-    clip_sample: True
-    set_alpha_to_one: True
-    steps_offset: 0
-    prediction_type: sample
 
 
   num_inference_steps: 10
   obs_as_global_cond: true
   shape_meta: ${shape_meta}
 
-  use_pc_color: true
+  use_pc_color: false
   pointnet_type: "pointnet"
-
-
+  downsample_points: true
   pointcloud_encoder_cfg:
     in_channels: 3
     out_channels: ${policy.encoder_output_dim}
     use_layernorm: true
     final_norm: layernorm # layernorm, none
     normal_channel: false
-
+    num_points: ${policy.visual_cond_len} 
+    pointwise: true
+    
 
 ema:
-  _target_: equi_diffpo.model.diffusion.ema_model.EMAModel
+  _target_: maniflow.model.diffusion.ema_model.EMAModel
   update_after_step: 0
   inv_gamma: 1.0
   power: 0.75
@@ -80,7 +78,7 @@ ema:
   max_value: 0.9999
 
 dataloader:
-  batch_size: 128
+  batch_size: 256 
   num_workers: 8
   shuffle: True
   pin_memory: True
@@ -91,50 +89,54 @@ val_dataloader:
   num_workers: 8
   shuffle: False
   pin_memory: True
-  persistent_workers: True
+  persistent_workers: False
 
 optimizer:
   _target_: torch.optim.AdamW
   lr: 1.0e-4
-  betas: [0.95, 0.999]
+  betas: [0.9, 0.95]
   eps: 1.0e-8
-  weight_decay: 1.0e-6
+  weight_decay: 1.0e-3
 
 training:
   device: "cuda:0"
+  env_device: "cuda:0"
   seed: 42
   debug: False
   resume: True
   lr_scheduler: cosine
   lr_warmup_steps: 500
-  num_epochs: ${eval:'50000 / ${n_demo}'}
+  num_epochs: 1010
   gradient_accumulate_every: 1
   use_ema: True
-  rollout_every: ${eval:'1000 / ${n_demo}'}
-  checkpoint_every: ${eval:'1000 / ${n_demo}'}
-  val_every: 1
+  rollout_every: 500
+  checkpoint_every: 100
+  val_every: 50
   sample_every: 5
   max_train_steps: null
   max_val_steps: null
   tqdm_interval_sec: 1.0
 
 logging:
-  project: dp3_${task_name}
-  resume: true
-  mode: online
-  name: dp3_${n_demo}
-  tags: ["${name}", "${task_name}", "${exp_name}"]
+  group: ${exp_name}
   id: null
-  group: null
-
+  mode: online
+  name: ${training.seed}
+  project: ManiFlow
+  resume: true
+  tags:
+  - ${logging.project}
 
 checkpoint:
   save_ckpt: False # if True, save checkpoint every checkpoint_every
   topk:
-    monitor_key: test_mean_score
-    mode: max
-    k: 1
-    format_str: 'epoch={epoch:04d}-test_mean_score={test_mean_score:.3f}.ckpt'
+    monitor_key: val_loss # test_mean_score, val_loss
+    # mode: max
+    # k: 0
+    # format_str: 'epoch={epoch:04d}-test_mean_score={test_mean_score:.3f}.ckpt'
+    mode: min
+    k: 0
+    format_str: 'epoch={epoch:04d}-val_loss={val_loss:.6f}.ckpt'
   save_last_ckpt: True # this only saves when save_ckpt is True
   save_last_snapshot: False
 

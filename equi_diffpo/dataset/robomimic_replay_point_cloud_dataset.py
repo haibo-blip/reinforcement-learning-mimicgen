@@ -163,6 +163,8 @@ class RobomimicReplayPointCloudDataset(BaseImageDataset):
         }
         normalizer = LinearNormalizer()
         normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
+        for key in self.rgb_keys:
+            normalizer[key] = get_image_range_normalizer()
         # normalizer['point_cloud'] = SingleFieldLinearNormalizer.create_identity()
         return normalizer
 
