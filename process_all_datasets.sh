@@ -16,8 +16,6 @@ BASE_DIR="equi_diffpo/data/robomimic/datasets"
 
 # List of all datasets (excluding stack_d1 which is already processed)
 DATASETS=(
-    "coffee_d2"
-    "coffee_preparation_d1"
     "hammer_cleanup_d1"
     "kitchen_d1"
     "mug_cleanup_d1"

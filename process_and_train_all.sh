@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Script to first process all datasets, then train on all datasets using 3 GPUs sequentially
-# Each training runs on a single GPU at a time
+# Script to first process all datasets, then train on all datasets using 2 GPUs in parallel
+# Runs 2 trainings in parallel (one per GPU), starts next training when one finishes
 
 set -e  # Exit on error
 
@@ -33,7 +33,7 @@ DATASETS=(
 )
 
 # Available GPUs
-GPUS=(0 1 2)
+GPUS=(0 1)
 
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}ManiFlow Full Pipeline${NC}"
@@ -62,48 +62,97 @@ echo -e "${YELLOW}[$(date '+%Y-%m-%d %H:%M:%S')] Step 2: Starting training on al
 echo -e "${BLUE}Total datasets: ${#DATASETS[@]}${NC}"
 echo -e "${BLUE}Training configuration: ${CONFIG_NAME}${NC}"
 echo -e "${BLUE}Number of demos: ${N_DEMO}${NC}"
-echo -e "${BLUE}GPUs: ${GPUS[@]}${NC}"
+echo -e "${BLUE}GPUs: ${GPUS[@]} (${#GPUS[@]} GPUs in parallel)${NC}"
 echo -e "${BLUE}========================================${NC}\n"
 
 # Track training status
 successful_trainings=()
 failed_trainings=()
-gpu_index=0
+declare -A running_jobs  # Map of PID to dataset name
+declare -A job_gpu       # Map of PID to GPU id
+dataset_index=0
 
-# Train each dataset sequentially
-for dataset in "${DATASETS[@]}"; do
-    # Select GPU in round-robin fashion
-    gpu=${GPUS[$gpu_index]}
-    gpu_index=$(( (gpu_index + 1) % ${#GPUS[@]} ))
+# Function to start a training job
+start_training() {
+    local dataset=$1
+    local gpu=$2
 
     echo -e "${BLUE}========================================${NC}"
-    echo -e "${BLUE}[$(date '+%Y-%m-%d %H:%M:%S')] Training: ${dataset}${NC}"
+    echo -e "${BLUE}[$(date '+%Y-%m-%d %H:%M:%S')] Starting training: ${dataset}${NC}"
     echo -e "${BLUE}GPU: cuda:${gpu}${NC}"
     echo -e "${BLUE}Progress: $((${#successful_trainings[@]} + ${#failed_trainings[@]} + 1))/${#DATASETS[@]}${NC}"
     echo -e "${BLUE}========================================${NC}"
 
-    # Run training
-    if python train.py \
+    # Start training in background
+    python train.py \
         --config-name="${CONFIG_NAME}" \
         task_name="${dataset}" \
         n_demo=${N_DEMO} \
-        training.device="cuda:${gpu}"; then
+        training.device="cuda:${gpu}" &
 
-        successful_trainings+=("${dataset}")
-        echo -e "${GREEN}[$(date '+%Y-%m-%d %H:%M:%S')] Training completed successfully: ${dataset}${NC}\n"
-    else
-        failed_trainings+=("${dataset}")
-        echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')] Training failed: ${dataset}${NC}\n"
+    local pid=$!
+    running_jobs[$pid]=$dataset
+    job_gpu[$pid]=$gpu
 
-        # Ask whether to continue or stop
-        echo -e "${YELLOW}Do you want to continue with remaining datasets? (y/n)${NC}"
-        read -r -t 30 response || response="y"  # Default to yes after 30 seconds
+    echo -e "${BLUE}[$(date '+%Y-%m-%d %H:%M:%S')] Started ${dataset} on GPU ${gpu} (PID: ${pid})${NC}\n"
+}
 
-        if [[ ! "$response" =~ ^[Yy]$ ]]; then
-            echo -e "${RED}Stopping training pipeline.${NC}"
-            break
-        fi
+# Function to wait for any job to finish and return the GPU
+wait_for_any_job() {
+    while true; do
+        for pid in "${!running_jobs[@]}"; do
+            if ! kill -0 $pid 2>/dev/null; then
+                # Job finished
+                wait $pid
+                local exit_code=$?
+                local dataset=${running_jobs[$pid]}
+                local gpu=${job_gpu[$pid]}
+
+                if [ $exit_code -eq 0 ]; then
+                    successful_trainings+=("${dataset}")
+                    echo -e "${GREEN}[$(date '+%Y-%m-%d %H:%M:%S')] Training completed successfully: ${dataset} (GPU ${gpu})${NC}\n"
+                else
+                    failed_trainings+=("${dataset}")
+                    echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')] Training failed: ${dataset} (GPU ${gpu})${NC}\n"
+                fi
+
+                # Clean up
+                unset running_jobs[$pid]
+                unset job_gpu[$pid]
+
+                # Return the freed GPU
+                echo $gpu
+                return 0
+            fi
+        done
+        sleep 2
+    done
+}
+
+# Start initial trainings (one per GPU)
+available_gpus=("${GPUS[@]}")
+for gpu in "${available_gpus[@]}"; do
+    if [ $dataset_index -lt ${#DATASETS[@]} ]; then
+        start_training "${DATASETS[$dataset_index]}" "$gpu"
+        dataset_index=$((dataset_index + 1))
     fi
+done
+
+# Process remaining datasets
+while [ $dataset_index -lt ${#DATASETS[@]} ]; do
+    # Wait for any training to finish and get the freed GPU
+    freed_gpu=$(wait_for_any_job)
+
+    # Start next training on the freed GPU
+    if [ $dataset_index -lt ${#DATASETS[@]} ]; then
+        start_training "${DATASETS[$dataset_index]}" "$freed_gpu"
+        dataset_index=$((dataset_index + 1))
+    fi
+done
+
+# Wait for all remaining jobs to finish
+while [ ${#running_jobs[@]} -gt 0 ]; do
+    wait_for_any_job > /dev/null
 done
 
 # ============================================
