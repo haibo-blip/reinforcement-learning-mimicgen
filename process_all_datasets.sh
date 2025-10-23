@@ -45,7 +45,7 @@ process_dataset() {
     if python equi_diffpo/scripts/dataset_states_to_obs.py \
         --input "${input_file}" \
         --output "${voxel_file}" \
-        --num_workers=24; then
+        --num_workers=12; then
         echo -e "${GREEN}[${dataset}] Step 1/2: Completed successfully${NC}"
     else
         echo -e "${RED}[${dataset}] Step 1/2: Failed!${NC}"
