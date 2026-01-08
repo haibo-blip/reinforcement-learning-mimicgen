@@ -1,0 +1,152 @@
+defaults:
+  - _self_
+  - task: mimicgen_pc_abs
+
+name: train_maniflow_pointcloud_rl
+_target_: equi_diffpo.rl_training.rl_workspace.RLTrainingWorkspace
+
+# Reference the task configuration
+shape_meta: ${task.shape_meta}
+exp_name: "maniflow_pc_rl"
+
+task_name: stack_d1
+n_demo: 100
+horizon: 16
+n_obs_steps: 2
+n_action_steps: 8
+n_latency_steps: 0
+dataset_obs_steps: ${n_obs_steps}
+
+# Pretrained policy path (update this to your checkpoint)
+# pretrained_policy_path: "path/to/your/pretrained/checkpoint.ckpt"
+
+# Policy configuration (same as training config)
+policy:
+  _target_: equi_diffpo.policy.maniflow.maniflow_pointcloud_policy.ManiFlowTransformerPointcloudPolicy
+
+  # ManiFlow parameters
+  horizon: ${horizon}
+  n_action_steps: ${n_action_steps}
+  n_obs_steps: ${n_obs_steps}
+  num_inference_steps: 10
+  obs_as_global_cond: True
+
+  # DiTX Transformer architecture
+  n_layer: 12
+  n_head: 8
+  n_emb: 768
+  visual_cond_len: 256
+  max_lang_cond_len: 1024
+  qkv_bias: True
+  qk_norm: True
+  block_type: "DiTX"
+  language_conditioned: False
+
+  # ManiFlow training parameters
+  flow_batch_ratio: 0.75
+  consistency_batch_ratio: 0.25
+  denoise_timesteps: 10
+  sample_t_mode_flow: "beta"
+  sample_t_mode_consistency: "discrete"
+  sample_dt_mode_consistency: "uniform"
+  sample_target_t_mode: "relative"
+  diffusion_timestep_embed_dim: 128
+  diffusion_target_t_embed_dim: 128
+
+  # Point cloud encoder parameters
+  encoder_type: "DP3Encoder"
+  crop_shape: null
+  encoder_output_dim: 128
+  pcd_input_channel: 6  # xyz + rgb
+  pcd_down_sample_num: 512
+  shape_meta: ${shape_meta}
+
+  use_pc_color: false
+  pointnet_type: "pointnet"
+  downsample_points: true
+  pointcloud_encoder_cfg:
+    in_channels: 6
+    out_channels: ${policy.encoder_output_dim}
+    use_layernorm: true
+    final_norm: layernorm # layernorm, none
+    normal_channel: false
+    num_points: ${policy.visual_cond_len}
+    pointwise: true
+
+# RL Training Configuration
+rl_training:
+  num_epochs: 100
+  checkpoint_every: 10
+  val_every: 20
+
+  # Rollout Collection
+  rollout_collector:
+    max_episode_steps: 400
+    n_episodes_per_batch: 16
+    n_envs: 16
+    render_episodes: 4
+    device: "cuda"
+    tqdm_interval_sec: 1.0
+    record_video: True
+
+  # PPO Training
+  ppo_trainer:
+    # PPO hyperparameters
+    clip_ratio: 0.2
+    entropy_coef: 0.01
+    value_loss_coef: 0.5
+    max_grad_norm: 0.5
+
+    # GAE parameters
+    gamma: 0.99
+    gae_lambda: 0.95
+
+    # Training parameters
+    ppo_epochs: 4
+    mini_batch_size: 64
+    policy_lr: 1.0e-5  # Lower learning rate for fine-tuning
+    critic_lr: 1.0e-4
+
+    # Flow SDE parameters (following RLinf pi0.5 approach)
+    noise_level: 0.5  # Fixed noise level for flow SDE
+    num_inference_steps: 10  # Number of denoising steps
+
+# Training configuration
+training:
+  device: "cuda:0"
+  seed: 42
+
+# Logging configuration
+logging:
+  project: maniflow_pointcloud_rl_${task_name}
+  resume: True
+  mode: online
+  name: ${name}_${task_name}_rl
+  tags: ["${name}", "${task_name}", "${exp_name}", "rl"]
+  id: null
+  group: ${exp_name}
+
+# Checkpoint configuration (inherited from task)
+checkpoint:
+  save_ckpt: True
+  topk:
+    monitor_key: rl_mean_episode_reward
+    mode: max
+    k: 5
+    format_str: 'epoch={epoch:04d}-reward={rl_mean_episode_reward:.3f}.ckpt'
+  save_last_ckpt: True
+  save_last_snapshot: False
+
+# Output configuration
+multi_run:
+  run_dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
+
+hydra:
+  job:
+    override_dirname: ${name}
+  run:
+    dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+  sweep:
+    dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+    subdir: ${hydra.job.num}
