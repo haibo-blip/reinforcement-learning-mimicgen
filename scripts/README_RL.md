@@ -57,13 +57,14 @@ python scripts/train_rl.py \
 
 The RL training configuration extends the base ManiFlow training config with additional RL-specific parameters:
 
+**Important**: The scripts automatically register the required Hydra resolvers (`get_max_steps`, `eval`, etc.) that are needed for the task configurations to work properly.
+
 ### Key Configuration Sections
 
-1. **Rollout Collection** (`rl_training.rollout_collector`)
-   - `n_episodes_per_batch`: Episodes to collect per training iteration
-   - `n_envs`: Number of parallel environments
-   - `max_episode_steps`: Maximum steps per episode
-   - `render_episodes`: Number of episodes to record as videos
+1. **RL Training** (`rl_training`)
+   - `collect_n_episodes`: Episodes to collect per training iteration
+   - `num_epochs`: Total number of training epochs
+   - Environment configuration inherited from base task config
 
 2. **PPO Training** (`rl_training.ppo_trainer`)
    - `clip_ratio`: PPO clipping parameter (0.2)
@@ -81,8 +82,8 @@ The RL training configuration extends the base ManiFlow training config with add
 ```
 equi_diffpo/rl_training/
 ├── __init__.py
-├── rl_rollout_collector.py    # Multi-threaded rollout collection
-├── ppo_trainer.py             # PPO training with GAE
+├── rl_robomimic_runner.py     # RL-extended robomimic runner (follows base runner pattern)
+├── ppo_trainer.py             # PPO training with flow SDE support
 └── rl_workspace.py            # Main RL training workspace
 
 equi_diffpo/config/

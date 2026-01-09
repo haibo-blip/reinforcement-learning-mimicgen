@@ -17,6 +17,9 @@ n_action_steps: 8
 n_latency_steps: 0
 dataset_obs_steps: ${n_obs_steps}
 
+# Dataset path (required by env_runner configuration)
+dataset_path: equi_diffpo/data/robomimic/datasets/${task_name}/${task_name}_voxel_abs.hdf5
+
 # Pretrained policy path (update this to your checkpoint)
 # pretrained_policy_path: "path/to/your/pretrained/checkpoint.ckpt"
 
@@ -79,15 +82,8 @@ rl_training:
   checkpoint_every: 10
   val_every: 20
 
-  # Rollout Collection
-  rollout_collector:
-    max_episode_steps: 400
-    n_episodes_per_batch: 16
-    n_envs: 16
-    render_episodes: 4
-    device: "cuda"
-    tqdm_interval_sec: 1.0
-    record_video: True
+  # RL Training Parameters
+  collect_n_episodes: 16  # Number of episodes to collect per training iteration
 
   # PPO Training
   ppo_trainer:

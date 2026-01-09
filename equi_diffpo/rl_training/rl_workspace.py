@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from equi_diffpo.workspace.base_workspace import BaseWorkspace
-from equi_diffpo.rl_training.rl_rollout_collector import RLRolloutCollector
+from equi_diffpo.rl_training.rl_robomimic_runner import RLRobomimicRunner
 from equi_diffpo.rl_training.ppo_trainer import PPOTrainer
 from equi_diffpo.common.pytorch_util import dict_apply
 
@@ -47,17 +47,15 @@ class RLTrainingWorkspace(BaseWorkspace):
             from equi_diffpo.model.common.normalizer import LinearNormalizer
             self.normalizer = LinearNormalizer()
 
-        # Setup environment runner
-        self.env_runner = hydra.utils.instantiate(
-            cfg.task.env_runner,
-            output_dir=self.output_dir
-        )
+        # Setup RL environment runner (extends base runner)
+        env_runner_cfg = cfg.task.env_runner.copy()
+        # Override target to use RL-specific runner
+        env_runner_cfg._target_ = "equi_diffpo.rl_training.rl_robomimic_runner.RLRobomimicRunner"
 
-        # Setup RL components
-        self.rollout_collector = RLRolloutCollector(
-            env_runner=self.env_runner,
-            normalizer=self.normalizer,
-            **cfg.rl_training.rollout_collector
+        self.rl_runner = hydra.utils.instantiate(
+            env_runner_cfg,
+            output_dir=self.output_dir,
+            collect_episode_data=True
         )
 
         self.ppo_trainer = PPOTrainer(
@@ -121,18 +119,21 @@ class RLTrainingWorkspace(BaseWorkspace):
         for epoch in range(cfg.rl_training.num_epochs):
             self.epoch = epoch
 
-            # Collect rollout batch
+            # Collect rollout batch using RL runner
             print(f"Epoch {epoch}: Collecting rollouts...")
             self.policy.eval()  # Set to eval mode for rollout
 
-            batch_data, rollout_metrics = self.rollout_collector.collect_rollout_batch(self.policy)
+            rollout_metrics, episode_data = self.rl_runner.run_rl_collection(self.policy)
+
+            # Convert episode data to batch format for PPO
+            batch_data = self._convert_episode_data_to_batch(episode_data)
 
             # Log rollout metrics
             if cfg.logging.mode != 'disabled':
                 wandb.log(rollout_metrics, step=self.global_step)
 
-            print(f"Collected {batch_data['obs']['point_cloud'].shape[0]} episodes, "
-                  f"mean reward: {rollout_metrics['rl/mean_episode_reward']:.3f}")
+            print(f"Collected {len(episode_data['episode_lengths'])} episodes, "
+                  f"mean reward: {rollout_metrics.get('train/mean_score', rollout_metrics.get('test/mean_score', 0.0)):.3f}")
 
             # Update policy with PPO
             print(f"Epoch {epoch}: Updating policy...")
@@ -164,13 +165,84 @@ class RLTrainingWorkspace(BaseWorkspace):
         if cfg.logging.mode != 'disabled':
             wandb.finish()
 
+    def _convert_episode_data_to_batch(self, episode_data):
+        """Convert episode data from RL runner to batch format for PPO."""
+        import torch
+
+        n_episodes = len(episode_data['episode_lengths'])
+        max_length = max(episode_data['episode_lengths'])
+
+        # Initialize batch tensors
+        batch_data = {
+            'obs': {},
+            'actions': None,
+            'fixed_noise': None,
+            'rewards': None,
+            'dones': None,
+            'episode_lengths': torch.tensor(episode_data['episode_lengths'])
+        }
+
+        # Get observation keys from first episode
+        obs_keys = list(episode_data['obs'][0].keys())
+
+        # Process observations
+        for key in obs_keys:
+            first_obs_shape = episode_data['obs'][0][key].shape[1:]  # Skip time dimension
+            batch_obs = torch.zeros(n_episodes, max_length, *first_obs_shape, dtype=torch.float32)
+
+            for ep_idx in range(n_episodes):
+                ep_length = episode_data['episode_lengths'][ep_idx]
+                batch_obs[ep_idx, :ep_length] = torch.from_numpy(episode_data['obs'][ep_idx][key])
+
+            batch_data['obs'][key] = batch_obs
+
+        # Process actions
+        action_dim = episode_data['actions'][0].shape[-1]
+        batch_actions = torch.zeros(n_episodes, max_length, action_dim, dtype=torch.float32)
+
+        for ep_idx in range(n_episodes):
+            ep_length = episode_data['episode_lengths'][ep_idx]
+            batch_actions[ep_idx, :ep_length] = torch.from_numpy(episode_data['actions'][ep_idx])
+
+        batch_data['actions'] = batch_actions
+
+        # Process fixed noise
+        noise_shape = episode_data['fixed_noise'][0].shape[1:]  # Skip time dimension
+        batch_fixed_noise = torch.zeros(n_episodes, max_length, *noise_shape, dtype=torch.float32)
+
+        for ep_idx in range(n_episodes):
+            ep_length = episode_data['episode_lengths'][ep_idx]
+            batch_fixed_noise[ep_idx, :ep_length] = torch.from_numpy(episode_data['fixed_noise'][ep_idx])
+
+        batch_data['fixed_noise'] = batch_fixed_noise
+
+        # Process rewards
+        batch_rewards = torch.zeros(n_episodes, max_length, dtype=torch.float32)
+
+        for ep_idx in range(n_episodes):
+            ep_length = episode_data['episode_lengths'][ep_idx]
+            batch_rewards[ep_idx, :ep_length] = torch.from_numpy(episode_data['rewards'][ep_idx])
+
+        batch_data['rewards'] = batch_rewards
+
+        # Process dones
+        batch_dones = torch.zeros(n_episodes, max_length, dtype=torch.bool)
+
+        for ep_idx in range(n_episodes):
+            ep_length = episode_data['episode_lengths'][ep_idx]
+            batch_dones[ep_idx, :ep_length] = torch.from_numpy(episode_data['dones'][ep_idx])
+
+        batch_data['dones'] = batch_dones
+
+        return batch_data
+
     def run_validation(self):
         """Run validation rollouts."""
         print("Running validation...")
         self.policy.eval()
 
-        # Collect validation rollouts
-        val_batch_data, val_metrics = self.rollout_collector.collect_rollout_batch(self.policy)
+        # Collect validation rollouts using RL runner
+        val_metrics, _ = self.rl_runner.run_rl_collection(self.policy)
 
         # Add validation prefix to metrics
         val_metrics_prefixed = {f'val/{k}': v for k, v in val_metrics.items()}
@@ -178,7 +250,8 @@ class RLTrainingWorkspace(BaseWorkspace):
         if self.cfg.logging.mode != 'disabled':
             wandb.log(val_metrics_prefixed, step=self.global_step)
 
-        print(f"Validation - Mean reward: {val_metrics['rl/mean_episode_reward']:.3f}")
+        mean_score = val_metrics.get('train/mean_score', val_metrics.get('test/mean_score', 0.0))
+        print(f"Validation - Mean reward: {mean_score:.3f}")
 
     def save_checkpoint(self):
         """Save training checkpoint."""

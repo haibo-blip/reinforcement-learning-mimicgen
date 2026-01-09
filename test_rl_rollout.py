@@ -11,7 +11,40 @@ from omegaconf import DictConfig, OmegaConf
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from equi_diffpo.rl_training.rl_rollout_collector import RLRolloutCollector
+# Register hydra resolvers (from train.py)
+max_steps = {
+    'stack_d1': 400,
+    'stack_three_d1': 400,
+    'square_d2': 400,
+    'threading_d2': 400,
+    'coffee_d2': 400,
+    'three_piece_assembly_d2': 500,
+    'hammer_cleanup_d1': 500,
+    'mug_cleanup_d1': 500,
+    'kitchen_d1': 800,
+    'nut_assembly_d0': 500,
+    'pick_place_d0': 1000,
+    'coffee_preparation_d1': 800,
+    'tool_hang': 700,
+    'can': 400,
+    'lift': 400,
+    'square': 400,
+}
+
+def get_ws_x_center(task_name):
+    if task_name.startswith('kitchen_') or task_name.startswith('hammer_cleanup_'):
+        return -0.2
+    else:
+        return 0.
+
+def get_ws_y_center(task_name):
+    return 0.
+
+OmegaConf.register_new_resolver("get_max_steps", lambda x: max_steps[x], replace=True)
+OmegaConf.register_new_resolver("get_ws_x_center", get_ws_x_center, replace=True)
+OmegaConf.register_new_resolver("get_ws_y_center", get_ws_y_center, replace=True)
+OmegaConf.register_new_resolver("eval", eval, replace=True)
+
 from equi_diffpo.rl_training.rl_workspace import RLTrainingWorkspace
 
 
@@ -33,24 +66,30 @@ def test_rl_rollout(cfg: DictConfig):
         workspace = RLTrainingWorkspace(cfg)
         print("   ✓ Workspace created successfully")
 
-        # Test rollout collection
+        # Test rollout collection using RL runner
         print("\n2. Testing Rollout Collection...")
-        batch_data, rollout_metrics = workspace.rollout_collector.collect_rollout_batch(workspace.policy)
+        rollout_metrics, episode_data = workspace.rl_runner.run_rl_collection(workspace.policy)
 
         print("   ✓ Rollout collection completed")
-        print(f"   - Collected {batch_data['obs']['point_cloud'].shape[0]} episodes")
-        print(f"   - Episode length range: {batch_data['episode_lengths'].min().item()}-{batch_data['episode_lengths'].max().item()}")
-        print(f"   - Mean episode reward: {rollout_metrics['rl/mean_episode_reward']:.3f}")
+        print(f"   - Collected {len(episode_data['episode_lengths'])} episodes")
+        print(f"   - Episode length range: {min(episode_data['episode_lengths'])}-{max(episode_data['episode_lengths'])}")
 
-        # Print batch data shapes
-        print("\n3. Batch Data Shapes:")
-        print(f"   - Observations:")
+        mean_reward = rollout_metrics.get('train/mean_score', rollout_metrics.get('test/mean_score', 0.0))
+        print(f"   - Mean episode reward: {mean_reward:.3f}")
+
+        # Convert to batch format and print shapes
+        print("\n3. Converting to Batch Format...")
+        batch_data = workspace._convert_episode_data_to_batch(episode_data)
+
+        print("   - Batch Data Shapes:")
+        print(f"     Observations:")
         for key, value in batch_data['obs'].items():
-            print(f"     {key}: {value.shape}")
-        print(f"   - Actions: {batch_data['actions'].shape}")
-        print(f"   - Rewards: {batch_data['rewards'].shape}")
-        print(f"   - Dones: {batch_data['dones'].shape}")
-        print(f"   - Episode lengths: {batch_data['episode_lengths'].shape}")
+            print(f"       {key}: {value.shape}")
+        print(f"     Actions: {batch_data['actions'].shape}")
+        print(f"     Fixed Noise: {batch_data['fixed_noise'].shape}")
+        print(f"     Rewards: {batch_data['rewards'].shape}")
+        print(f"     Dones: {batch_data['dones'].shape}")
+        print(f"     Episode lengths: {batch_data['episode_lengths'].shape}")
 
         # Test PPO trainer (without actual training)
         print("\n4. Testing PPO Trainer Setup...")
