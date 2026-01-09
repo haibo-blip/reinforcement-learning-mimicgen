@@ -5,6 +5,7 @@ import sys
 import torch
 from pathlib import Path
 from omegaconf import DictConfig, OmegaConf
+import numpy as np
 
 # Add the project root to Python path
 project_root = Path(__file__).parent
