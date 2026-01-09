@@ -5,6 +5,7 @@ import wandb
 from omegaconf import DictConfig, OmegaConf
 from pathlib import Path
 import numpy as np
+from typing import Optional
 
 from equi_diffpo.workspace.base_workspace import BaseWorkspace
 from equi_diffpo.rl_training.rl_robomimic_runner import RLRobomimicRunner
@@ -47,16 +48,21 @@ class RLTrainingWorkspace(BaseWorkspace):
             from equi_diffpo.model.common.normalizer import LinearNormalizer
             self.normalizer = LinearNormalizer()
 
-        # Setup RL environment runner (extends base runner)
-        env_runner_cfg = cfg.task.env_runner.copy()
-        # Override target to use RL-specific runner
-        env_runner_cfg._target_ = "equi_diffpo.rl_training.rl_robomimic_runner.RLRobomimicRunner"
+        # Setup RL environment runner
+        self.rl_runner: Optional[RLRobomimicRunner] = None
+        if 'env_runner' in cfg.task:
+            env_runner_cfg = cfg.task.env_runner.copy()
+            # Override target to use RL-specific runner
+            env_runner_cfg._target_ = "equi_diffpo.rl_training.rl_robomimic_runner.RLRobomimicRunner"
 
-        self.rl_runner = hydra.utils.instantiate(
-            env_runner_cfg,
-            output_dir=self.output_dir,
-            collect_episode_data=True
-        )
+            self.rl_runner = hydra.utils.instantiate(
+                env_runner_cfg,
+                output_dir=self.output_dir,
+                collect_episode_data=True
+            )
+
+        if self.rl_runner is None:
+            raise ValueError("Failed to initialize RL runner. Check that 'env_runner' is configured in the task.")
 
         self.ppo_trainer = PPOTrainer(
             policy=self.policy,
@@ -238,6 +244,10 @@ class RLTrainingWorkspace(BaseWorkspace):
 
     def run_validation(self):
         """Run validation rollouts."""
+        if self.rl_runner is None:
+            print("Warning: No RL runner available for validation")
+            return
+
         print("Running validation...")
         self.policy.eval()
 

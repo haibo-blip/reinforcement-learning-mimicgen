@@ -68,6 +68,9 @@ def test_rl_rollout(cfg: DictConfig):
 
         # Test rollout collection using RL runner
         print("\n2. Testing Rollout Collection...")
+        if workspace.rl_runner is None:
+            raise RuntimeError("RL runner was not properly initialized")
+
         rollout_metrics, episode_data = workspace.rl_runner.run_rl_collection(workspace.policy)
 
         print("   ✓ Rollout collection completed")
