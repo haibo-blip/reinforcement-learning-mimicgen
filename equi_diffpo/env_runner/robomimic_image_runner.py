@@ -65,7 +65,7 @@ class RobomimicImageRunner(BaseImageRunner):
             tqdm_interval_sec=5.0,
             n_envs=None
         ):
-        super().__init__(output_dir)
+        super().__init__()
 
         if n_envs is None:
             n_envs = n_train + n_test

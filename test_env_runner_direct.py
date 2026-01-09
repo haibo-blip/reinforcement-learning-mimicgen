@@ -82,10 +82,20 @@ def create_real_dataset_for_task(dataset_path: str, task_name: str = "stack_d1")
             'control_freq': 20,
             'horizon': max_steps[task_name],
         }
-        f.attrs['env_args'] = str(env_args)
-
-        # Create demo data
+        # Create data group FIRST
         data_group = f.create_group('data')
+
+        # Store env_args in data group (robomimic expects it here)
+        import json
+        data_group.attrs['env_args'] = json.dumps(env_args)
+
+        # Add required metadata attributes to data group
+        data_group.attrs['date'] = '2024-01-01'
+        data_group.attrs['time'] = '12:00:00'
+        data_group.attrs['repository_version'] = '1.0.0'
+        data_group.attrs['env_name'] = env_args['env_name']
+        data_group.attrs['total'] = 3
+
         n_demos = 3
         episode_length = 100
 
