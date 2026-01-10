@@ -6,7 +6,7 @@ Includes loss masking and other RL-specific utilities following RLinf patterns.
 
 import torch
 import numpy as np
-from typing import Tuple
+from typing import Tuple, Optional
 
 
 def compute_loss_mask(dones: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:

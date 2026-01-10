@@ -50,13 +50,13 @@ class ManiFlowRolloutBatch:
     prev_logprobs: np.ndarray
     prev_values: np.ndarray
 
-    # Loss masking [n_chunk_steps, batch_size, action_chunk]
-    loss_mask: Optional[np.ndarray] = None
-    loss_mask_sum: Optional[np.ndarray] = None
-
     # Forward inputs [n_chunk_steps, batch_size, ...]
     chains: np.ndarray
     denoise_inds: np.ndarray
+
+    # Loss masking [n_chunk_steps, batch_size, action_chunk] - optional fields with defaults
+    loss_mask: Optional[np.ndarray] = None
+    loss_mask_sum: Optional[np.ndarray] = None
 
     # Computed during advantage calculation
     advantages: Optional[np.ndarray] = None  # [n_chunk_steps, batch_size, action_chunk]
@@ -215,10 +215,17 @@ class ManiFlowRolloutCollector:
         dones_torch = torch.from_numpy(dones)
 
         # Add bootstrap step for loss mask computation (all zeros for last step)
-        # Shape: [n_steps+1, batch_size, action_chunk]
+        # compute_loss_mask expects shape [n_steps+1, batch_size, action_chunk]
         action_chunk_size = rewards.shape[2] if len(rewards.shape) > 2 else 1
-        bootstrap_done = torch.zeros(1, batch_size, action_chunk_size, dtype=dones_torch.dtype)
-        dones_with_bootstrap = torch.cat([dones_torch, bootstrap_done], dim=0)
+
+        # Expand dones from [n_steps, batch_size, 1] to [n_steps, batch_size, action_chunk]
+        if dones_torch.shape[-1] != action_chunk_size:
+            dones_expanded = dones_torch.expand(-1, -1, action_chunk_size)
+        else:
+            dones_expanded = dones_torch
+
+        bootstrap_done = torch.zeros(1, batch_size, action_chunk_size, dtype=dones_expanded.dtype)
+        dones_with_bootstrap = torch.cat([dones_expanded, bootstrap_done], dim=0)
 
         # Compute loss mask
         loss_mask, loss_mask_sum = compute_loss_mask(dones_with_bootstrap)
@@ -328,4 +335,96 @@ class ManiFlowRolloutCollector:
             denoise_inds=denoise_inds
         )
 
+
+class ManiFlowDummyEnvRunner:
+    """Dummy environment runner for testing without actual environments."""
+
+    def __init__(self,
+                 num_envs: int = 4,
+                 action_dim: int = 10,
+                 obs_horizon: int = 2,
+                 action_chunk: int = 8,
+                 horizon: int = 16,
+                 max_steps: int = 50,
+                 num_inference_steps: int = 10):
+        self.num_envs = num_envs
+        self.action_dim = action_dim
+        self.obs_horizon = obs_horizon
+        self.action_chunk = action_chunk
+        self.horizon = horizon
+        self.max_steps = max_steps
+        self.num_inference_steps = num_inference_steps
+
+        print(f"[ManiFlowDummyEnvRunner] Initialized with:")
+        print(f"  - num_envs: {num_envs}")
+        print(f"  - action_dim: {action_dim}")
+        print(f"  - obs_horizon: {obs_horizon}")
+        print(f"  - action_chunk: {action_chunk}")
+        print(f"  - max_steps: {max_steps}")
+
+    def run_rl(self, policy) -> Dict[str, Any]:
+        """
+        Simulate RL rollout collection with dummy data.
+
+        Returns data in the format expected by ManiFlowRolloutCollector.
+        """
+        print("[ManiFlowDummyEnvRunner] Running RL rollout simulation...")
+
+        n_steps = self.max_steps
+        batch_size = self.num_envs
+        N = self.num_inference_steps
+
+        # Generate dummy observations
+        observations = {
+            'robot0_eye_in_hand_image': np.random.randn(n_steps, batch_size, self.obs_horizon, 3, 84, 84).astype(np.float32),
+            'point_cloud': np.random.randn(n_steps, batch_size, self.obs_horizon, 1024, 6).astype(np.float32),
+            'robot0_eef_pos': np.random.randn(n_steps, batch_size, self.obs_horizon, 3).astype(np.float32),
+            'robot0_eef_quat': np.random.randn(n_steps, batch_size, self.obs_horizon, 4).astype(np.float32),
+            'robot0_gripper_qpos': np.random.randn(n_steps, batch_size, self.obs_horizon, 2).astype(np.float32),
+        }
+
+        # Generate dummy actions [n_steps, batch_size, action_chunk, action_dim]
+        actions = np.random.randn(n_steps, batch_size, self.action_chunk, self.action_dim).astype(np.float32)
+
+        # Generate dummy rewards [n_steps, batch_size, action_chunk]
+        rewards = np.random.randn(n_steps, batch_size, self.action_chunk).astype(np.float32)
+        rewards = rewards * 0.1 + 0.1  # Make rewards slightly positive
+
+        # Generate done flags [n_steps, batch_size, 1]
+        dones = np.zeros((n_steps, batch_size, 1), dtype=np.float32)
+        # Simulate some episodes ending
+        for b in range(batch_size):
+            end_step = np.random.randint(n_steps // 2, n_steps)
+            dones[end_step:, b, 0] = 1.0
+
+        # Generate dummy policy outputs
+        prev_logprobs = np.random.randn(n_steps, batch_size, self.action_chunk, self.action_dim).astype(np.float32) * 0.1 - 1.0
+        prev_values = np.random.randn(n_steps, batch_size, 1).astype(np.float32)
+        chains = np.random.randn(n_steps, batch_size, N + 1, self.horizon, self.action_dim).astype(np.float32)
+        denoise_inds = np.tile(np.arange(N), (n_steps, batch_size, 1)).astype(np.int64)
+
+        rl_data = {
+            'observations': observations,
+            'actions': actions,
+            'rewards': rewards,
+            'dones': dones,
+            'prev_logprobs': prev_logprobs,
+            'prev_values': prev_values,
+            'chains': chains,
+            'denoise_inds': denoise_inds,
+            'total_steps': n_steps,
+            'total_envs': batch_size,
+        }
+
+        print(f"[ManiFlowDummyEnvRunner] Generated rollout data:")
+        print(f"  - actions shape: {actions.shape}")
+        print(f"  - rewards shape: {rewards.shape}")
+        print(f"  - chains shape: {chains.shape}")
+
+        return {
+            'rl_data': rl_data,
+            'log_data': {},
+            'video_paths': [],
+            'episode_rewards': [],
+        }
 

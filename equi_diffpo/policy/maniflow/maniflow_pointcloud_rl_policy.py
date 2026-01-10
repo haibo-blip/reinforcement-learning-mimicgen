@@ -301,10 +301,13 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         """Set global step for noise annealing."""
         self.global_step = global_step
 
-    def train(self):
+    def train(self, mode: bool = True):
         """Set training mode (adds noise like Pi0.5)."""
-        self._training_mode = True
-        return super().train()
+        if mode:
+            self._training_mode = True
+        else:
+            self._training_mode = False
+        return super().train(mode)
 
     def eval(self):
         """Set evaluation mode (deterministic, no noise like Pi0.5)."""
@@ -371,8 +374,8 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
 
     def get_step_prediction(self,
                            x_t: torch.Tensor,
-                           t: float,
-                           target_t: float,
+                           t,
+                           target_t,
                            vis_cond: Optional[torch.Tensor] = None,
                            lang_cond: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -380,8 +383,8 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
 
         Args:
             x_t: Current state [B, T, Da]
-            t: Current time
-            target_t: Target time
+            t: Current time (float or tensor [B])
+            target_t: Target time (float or tensor [B])
             vis_cond: Visual conditioning
             lang_cond: Language conditioning
 
@@ -393,9 +396,18 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         device = x_t.device
         B = x_t.shape[0]
 
-        # Create time tensors
-        t_tensor = torch.full((B,), t, device=device, dtype=x_t.dtype)
-        target_t_tensor = torch.full((B,), target_t, device=device, dtype=x_t.dtype)
+        # Create time tensors - handle both scalar and tensor inputs
+        if isinstance(t, (int, float)):
+            t_tensor = torch.full((B,), t, device=device, dtype=x_t.dtype)
+            t_scalar = t
+        else:
+            t_tensor = t.to(device=device, dtype=x_t.dtype)
+            t_scalar = t.mean().item()  # For step_idx calculation
+
+        if isinstance(target_t, (int, float)):
+            target_t_tensor = torch.full((B,), target_t, device=device, dtype=x_t.dtype)
+        else:
+            target_t_tensor = target_t.to(device=device, dtype=x_t.dtype)
 
         # Get velocity prediction
         v_pred = self.model(
@@ -407,9 +419,13 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         )
 
         # Compute predictions using flow matching (like Pi0.5)
-        dt = target_t - t
+        # dt can be tensor or scalar
+        dt = target_t_tensor - t_tensor if torch.is_tensor(target_t_tensor) else target_t - t
         t_input = t_tensor[:, None, None].expand_as(x_t)
-        delta = torch.full_like(t_input, abs(dt))
+        if torch.is_tensor(dt):
+            delta = dt.abs()[:, None, None].expand_as(x_t)
+        else:
+            delta = torch.full_like(t_input, abs(dt))
 
         # Flow predictions (matching Pi0.5 logic)
         x0_pred = x_t - v_pred * t_input  # Predict clean data
@@ -438,8 +454,8 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
                     / (1 - torch.where(timesteps[:-1] == 1, timesteps[1], timesteps[:-1]))
                 )
 
-                # Get current step index (approximate)
-                step_idx = int(t * self.num_inference_steps)
+                # Get current step index (approximate) - use mean t for batch
+                step_idx = int(t_scalar * self.num_inference_steps)
                 step_idx = max(0, min(step_idx, len(sigmas) - 1))
                 sigma_i = sigmas[step_idx]
                 sigma_i = sigma_i.expand_as(t_input)
@@ -465,9 +481,9 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
 
         # Compute values using value head (like Pi0.5)
         if self.value_head is not None and vis_cond is not None:
-            # Use pooled observation features for value estimation (like Pi0.5)
-            # obs_features_pooled = vis_cond.mean(dim=1)  # [B, obs_feature_dim]
-            value_t = self.value_head(vis_cond)  # [B,1]
+            # Pool observation features across sequence dimension for value estimation
+            obs_features_pooled = vis_cond.mean(dim=1)  # [B, obs_feature_dim]
+            value_t = self.value_head(obs_features_pooled).squeeze(-1)  # [B]
         else:
             value_t = torch.zeros(B, device=device)
 
