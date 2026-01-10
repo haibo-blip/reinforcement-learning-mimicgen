@@ -37,7 +37,7 @@ class PPOConfig:
 
     # PPO parameters
     clip_range: float = 0.2           # PPO clip parameter
-    entropy_coef: float = 0.01        # Entropy loss coefficient
+    entropy_coef: float = 0        # Entropy loss coefficient
     value_coef: float = 0.5           # Value loss coefficient
     target_kl: float = 0.01           # Target KL divergence for early stopping
 

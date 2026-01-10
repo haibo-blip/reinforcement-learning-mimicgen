@@ -310,31 +310,35 @@ class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
     def linear_interpolate(self, noise, target, timestep, epsilon=0.0):
         """
         Linear interpolation between noise and target data with optional noise preservation.
-        
+
         Args:
-            noise (Tensor): Initial noise at t=0
-            target (Tensor): Target data point at t=1  
+            noise (Tensor): Initial noise at t=1
+            target (Tensor): Target data point at t=0
             timestep (float): Interpolation parameter in [0, 1]
-                            t=0 returns pure noise, t=1 returns target + epsilon*noise
+                            t=1 returns pure noise, t=0 returns target + epsilon*noise
             epsilon (float): Noise preservation factor. Controls minimum noise retained.
                             Default 0.0 for standard linear interpolation.
-                            
+
         Returns:
             Tensor: Interpolated data point at given timestep
-            
+
         Examples:
             >>> # Standard linear interpolation (epsilon=0)
             >>> result = linear_interpolate(noise, data, 0.5)  # 50% noise + 50% data
-            
-            >>> # With noise preservation (epsilon=0.01) 
-            >>> result = linear_interpolate(noise, data, 1.0, epsilon=0.01)  # data + 1% noise
+
+            >>> # With noise preservation (epsilon=0.01)
+            >>> result = linear_interpolate(noise, data, 0.0, epsilon=0.01)  # data + 1% noise
+
+        Note:
+            Updated to match RL policy convention: t=1 → noise, t=0 → data
         """
-        # Calculate noise coefficient with epsilon adjustment
-        noise_coeff = 1.0 - (1.0 - epsilon) * timestep
-        
-        # Linear combination: preserved_noise + scaled_target
-        interpolated_data_point = noise_coeff * noise + timestep * target
-        
+        # Calculate coefficients for RL convention: t=1 → noise, t=0 → data
+        noise_coeff = timestep + epsilon * (1.0 - timestep)
+        target_coeff = 1.0 - timestep
+
+        # Linear combination: noise_at_t + target_at_t
+        interpolated_data_point = noise_coeff * noise + target_coeff * target
+
         return interpolated_data_point
 
     
@@ -368,10 +372,11 @@ class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
             target_t_flow = dt_flow
         
         # compute interpolated data points at t and predict flow velocity
-        x_0_flow = torch.randn_like(actions, device=device) 
-        x_1_flow = actions.to(device) 
-        x_t_flow = self.linear_interpolate(x_0_flow, x_1_flow, t_flow, epsilon=0.0)
-        v_t_flow = x_1_flow - x_0_flow
+        # Note: With RL convention, x_1_flow is noise (t=1), x_0_flow is data (t=0)
+        x_1_flow = torch.randn_like(actions, device=device)  # noise at t=1
+        x_0_flow = actions.to(device)                        # data at t=0
+        x_t_flow = self.linear_interpolate(x_1_flow, x_0_flow, t_flow, epsilon=0.0)
+        v_t_flow = x_0_flow - x_1_flow  # velocity: noise → data (t=1 → t=0)
 
         target_dict['x_t'] = x_t_flow
         target_dict['t'] = t_flow
@@ -419,10 +424,11 @@ class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
             target_t_next = delta_t2
 
         # compute interpolated data points at timestep t and t_next
-        x0_ct = torch.randn_like(actions, device=device) 
-        x1_ct = actions.to(device) 
-        x_t_ct = self.linear_interpolate(x0_ct, x1_ct, t_ct, epsilon=0.0)
-        x_t_next = self.linear_interpolate(x0_ct, x1_ct, t_next, epsilon=0.0)
+        # Note: With RL convention, x1_ct is noise (t=1), x0_ct is data (t=0)
+        x1_ct = torch.randn_like(actions, device=device)  # noise at t=1
+        x0_ct = actions.to(device)                        # data at t=0
+        x_t_ct = self.linear_interpolate(x1_ct, x0_ct, t_ct, epsilon=0.0)
+        x_t_next = self.linear_interpolate(x1_ct, x0_ct, t_next, epsilon=0.0)
 
         # predict the average velocity from t_next toward next target (t_next + delta_t2)
         with torch.no_grad():
@@ -434,9 +440,10 @@ class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
                 lang_cond=lang_cond[-consistency_batchsize:] if lang_cond is not None else None,
             ) 
         # predict the target data point using the average velocity
-        pred_x1_ct = x_t_next + (1 - t_next) * v_avg_to_next_target
+        # Note: With RL convention, velocity direction is from high t to low t (noise → data)
+        pred_x0_ct = x_t_next - t_next * v_avg_to_next_target  # predict data point (t=0)
         # estimate the velocity at t by using the predicted endpoint
-        v_ct = (pred_x1_ct - x_t_ct) / (1 - t_ct)
+        v_ct = (pred_x0_ct - x_t_ct) / (-t_ct)  # velocity direction: high t → low t
 
         # target_t_ct is the target timestep for the current timestep t
         target_t_ct = delta_t1 if self.sample_target_t_mode == "relative" else t_next.squeeze()
@@ -451,24 +458,26 @@ class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
     @torch.no_grad()
     def sample_ode(self, x0=None, N=None, **model_kwargs):
         ### NOTE: Use Euler method to sample from the learned flow
+        # Updated to match RL convention: sample from t=1 (noise) to t=0 (data)
         if N is None:
             N = self.num_inference_steps
         dt = 1./N
         traj = [] # to store the trajectory
-        x = x0.detach().clone()
+        x = x0.detach().clone()  # x0 should be noise at t=1
         batchsize = x.shape[0]
 
-        t = torch.arange(0, N, device=x0.device, dtype=x0.dtype) / N
+        # Sample from t=1 to t=0 (RL convention: high t → low t)
+        t = torch.arange(N, 0, -1, device=x0.device, dtype=x0.dtype) / N  # [1.0, 0.9, ..., 0.1]
         traj.append(x.detach().clone())
 
         for i in range(N):
             ti = torch.ones((batchsize,), device=self.device) * t[i]
             if self.sample_target_t_mode == "absolute":
-                target_t = ti + dt
+                target_t = ti - dt  # Moving toward lower t
             elif self.sample_target_t_mode == "relative":
-                target_t = dt
+                target_t = -dt  # Negative because moving toward 0
             pred = self.model(x, ti, target_t=target_t, **model_kwargs)
-            x = x.detach().clone() + pred * dt
+            x = x.detach().clone() - pred * dt  # Negative because moving toward lower t
             traj.append(x.detach().clone())
 
         return traj

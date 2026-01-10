@@ -290,7 +290,7 @@ class RobomimicRLRunner(RobomimicImageRunner):
             'observations': combined_observations,
             'actions': np.stack(all_actions, axis=0),           # [n_steps, batch_size, action_chunk, action_dim]
             'rewards': np.stack(all_rewards, axis=0),           # [n_steps, batch_size, action_chunk]
-            'dones': np.array(all_dones),                       # [n_steps, batch_size]
+            'dones': np.stack(all_dones, axis=0),                       # [n_steps, batch_size]
             'prev_logprobs': np.stack(all_prev_logprobs, axis=0), # [n_steps, batch_size, action_chunk, action_dim]
             'prev_values': np.stack(all_prev_values, axis=0),   # [n_steps, batch_size, 1]
             'chains': np.stack(all_chains, axis=0),             # [n_steps, batch_size, N+1, horizon, action_dim]

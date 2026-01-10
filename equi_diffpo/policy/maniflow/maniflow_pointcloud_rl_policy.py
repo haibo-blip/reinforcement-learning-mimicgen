@@ -449,14 +449,8 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
                 x_t_std = torch.sqrt(delta) * sigma_i
 
             elif self.noise_method == "flow_noise" and self.noise_head is not None:
-                # Exactly like Pi0.5 flow_noise
-                x0_weight = 1 - (t_input - delta)
-                x1_weight = t_input - delta
-
-                # Use observation features for context-dependent noise
-                obs_features_pooled = vis_cond.mean(dim=1) if vis_cond is not None else torch.zeros(B, self.obs_feature_dim, device=device)
-                x_t_std_flat = self.noise_head(obs_features_pooled)  # [B, T*Da]
-                x_t_std = x_t_std_flat.view(B, self.horizon, self.action_dim)  # [B, T, Da]
+                    # To be implement
+                    raise Exception()
 
             else:
                 # Default train case
@@ -472,8 +466,8 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         # Compute values using value head (like Pi0.5)
         if self.value_head is not None and vis_cond is not None:
             # Use pooled observation features for value estimation (like Pi0.5)
-            obs_features_pooled = vis_cond.mean(dim=1)  # [B, obs_feature_dim]
-            value_t = self.value_head(obs_features_pooled).squeeze(-1)  # [B]
+            # obs_features_pooled = vis_cond.mean(dim=1)  # [B, obs_feature_dim]
+            value_t = self.value_head(vis_cond)  # [B,1]
         else:
             value_t = torch.zeros(B, device=device)
 
