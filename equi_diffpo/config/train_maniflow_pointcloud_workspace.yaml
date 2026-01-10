@@ -34,7 +34,7 @@ policy:
   n_layer: 12
   n_head: 8
   n_emb: 768
-  visual_cond_len: 256
+  visual_cond_len: 512
   max_lang_cond_len: 1024
   qkv_bias: True
   qk_norm: True
