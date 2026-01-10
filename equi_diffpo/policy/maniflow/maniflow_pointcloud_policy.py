@@ -475,7 +475,8 @@ class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
             if self.sample_target_t_mode == "absolute":
                 target_t = ti - dt  # Moving toward lower t
             elif self.sample_target_t_mode == "relative":
-                target_t = -dt  # Negative because moving toward 0
+                # target_t = -dt  # Negative because moving toward 0
+                target_t=0
             pred = self.model(x, ti, target_t=target_t, **model_kwargs)
             x = x.detach().clone() - pred * dt  # Negative because moving toward lower t
             traj.append(x.detach().clone())
