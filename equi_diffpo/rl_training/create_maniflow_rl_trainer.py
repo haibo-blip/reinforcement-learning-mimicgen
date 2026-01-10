@@ -6,7 +6,7 @@ Factory function to create ManiFlow RL trainer compatible with existing Hydra co
 import hydra
 from omegaconf import OmegaConf
 from typing import Dict, Any
-
+import torch
 from .maniflow_ppo_workspace import ManiFlowPPOTrainer, PPOConfig
 from .maniflow_advantage_calculator import AdvantageConfig
 from .maniflow_rollout_collector import ManiFlowRolloutCollector
@@ -36,8 +36,8 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
     if pretrained_policy_path:
         print(f"📂 Loading pretrained policy from: {pretrained_policy_path}")
         # TODO: Load checkpoint and transfer weights to RL policy
-        # checkpoint = torch.load(pretrained_policy_path)
-        # policy.load_state_dict(checkpoint['policy_state_dict'])
+        checkpoint = torch.load(pretrained_policy_path)
+        policy.load_state_dict(checkpoint['policy_state_dict'])
 
     # 3. Create RL-compatible environment runner from config
     # Use RobomimicRLRunner instead of regular RobomimicImageRunner

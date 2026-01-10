@@ -477,7 +477,7 @@ class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
             elif self.sample_target_t_mode == "relative":
                 target_t = -dt  # Negative because moving toward 0
             pred = self.model(x, ti, target_t=target_t, **model_kwargs)
-            x = x.detach().clone() - pred * dt  # Negative because moving toward lower t
+            x = x.detach().clone() + pred * dt  # Negative because moving toward lower t
             traj.append(x.detach().clone())
 
         return traj
@@ -560,8 +560,8 @@ class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
         v_ct_target = consistency_target_dict['v_target']
         loss_ct = F.mse_loss(v_ct_pred, v_ct_target, reduction='none')
         loss_ct = reduce(loss_ct, 'b ... -> b (...)', 'mean')
-        loss += loss_ct.mean()
-        loss_ct = loss_ct.mean().item()  
+        # loss += loss_ct.mean()
+        loss_ct = loss_ct.mean().item()
 
         loss = loss.mean()
         loss_dict = {

@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - task: mimicgen_pc_abs
+  - task: mimicgen_pc_abs_rl
 
 name: train_maniflow_pointcloud_rl
 _target_: equi_diffpo.rl_training.rl_workspace.RLTrainingWorkspace
