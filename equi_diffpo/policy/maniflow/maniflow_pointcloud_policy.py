@@ -376,7 +376,7 @@ class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
         x_1_flow = torch.randn_like(actions, device=device)  # noise at t=1
         x_0_flow = actions.to(device)                        # data at t=0
         x_t_flow = self.linear_interpolate(x_1_flow, x_0_flow, t_flow, epsilon=0.0)
-        v_t_flow = x_0_flow - x_1_flow  # velocity: noise → data (t=1 → t=0)
+        v_t_flow = x_1_flow-x_0_flow  # velocity: noise → data (t=1 → t=0)
 
         target_dict['x_t'] = x_t_flow
         target_dict['t'] = t_flow
@@ -477,7 +477,7 @@ class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
             elif self.sample_target_t_mode == "relative":
                 target_t = -dt  # Negative because moving toward 0
             pred = self.model(x, ti, target_t=target_t, **model_kwargs)
-            x = x.detach().clone() + pred * dt  # Negative because moving toward lower t
+            x = x.detach().clone() - pred * dt  # Negative because moving toward lower t
             traj.append(x.detach().clone())
 
         return traj
