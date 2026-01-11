@@ -408,12 +408,12 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             target_t_tensor = torch.full((B,), target_t, device=device, dtype=x_t.dtype)
         else:
             target_t_tensor = target_t.to(device=device, dtype=x_t.dtype)
-
+        target_t_tensor_for_model=torch.full((B,), target_t, device=device, dtype=x_t.dtype)
         # Get velocity prediction
         v_pred = self.model(
             sample=x_t,
             timestep=t_tensor,
-            target_t=target_t_tensor,
+            target_t=target_t_tensor_for_model,
             vis_cond=vis_cond,
             lang_cond=lang_cond
         )
