@@ -22,11 +22,11 @@ dataset_path: equi_diffpo/data/robomimic/datasets/${task_name}/${task_name}_voxe
 
 # Pretrained policy path (update this to your checkpoint)
 # pretrained_policy_path: "path/to/your/pretrained/checkpoint.ckpt"
-
+#pretrained_policy_path: "path/to/your/pretrained/checkpoint.ckpt
 # Policy configuration (same as training config)
 policy:
   _target_: equi_diffpo.policy.maniflow.maniflow_pointcloud_policy.ManiFlowTransformerPointcloudPolicy
-
+  checkpoint: /home/haibo_newtheory_ai/rl_project/maniflow_mimicgen/data/outputs/2026.01.10/19.57.06_train_maniflow_pointcloud_nut_assembly_d0/checkpoints/epoch=0100-test_mean_score=0.180.ckpt
   # ManiFlow parameters
   horizon: ${horizon}
   n_action_steps: ${n_action_steps}
