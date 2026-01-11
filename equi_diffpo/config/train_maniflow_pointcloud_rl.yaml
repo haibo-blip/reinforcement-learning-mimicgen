@@ -18,6 +18,7 @@ n_latency_steps: 0
 dataset_obs_steps: ${n_obs_steps}
 
 # Dataset path (required by env_runner configuration)
+dataset_target: equi_diffpo.dataset.robomimic_replay_point_cloud_dataset.RobomimicReplayPointCloudDataset
 dataset_path: equi_diffpo/data/robomimic/datasets/${task_name}/${task_name}_voxel_abs.hdf5
 
 # Pretrained policy path (update this to your checkpoint)
