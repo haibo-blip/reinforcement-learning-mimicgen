@@ -384,14 +384,156 @@ class RobomimicRLRunner(RobomimicImageRunner):
 
         return log_data
 
-    def run(self, policy: BaseImagePolicy):
+    def run_eval(self, policy: ManiFlowRLPointcloudPolicy) -> Dict[str, Any]:
+        """
+        Run evaluation rollout without noise for clean policy evaluation.
+
+        Args:
+            policy: ManiFlow RL policy
+
+        Returns:
+            Dictionary with evaluation metrics (no RL training data)
+        """
+        device = policy.device
+        dtype = policy.dtype
+        env = self.env
+
+        print(f"🔍 Starting evaluation rollout (no exploration noise)...")
+
+        # Plan for rollout
+        n_envs = len(self.env_fns)
+        n_inits = len(self.env_init_fn_dills)
+        n_chunks = math.ceil(n_inits / n_envs)
+
+        # Storage for evaluation data
+        all_video_paths = [None] * n_inits
+        all_rewards = [None] * n_inits
+
+        for chunk_idx in range(n_chunks):
+            start = chunk_idx * n_envs
+            end = min(n_inits, start + n_envs)
+            this_global_slice = slice(start, end)
+            this_n_active_envs = end - start
+            this_local_slice = slice(0, this_n_active_envs)
+
+            this_init_fns = self.env_init_fn_dills[this_global_slice]
+            n_diff = n_envs - len(this_init_fns)
+            if n_diff > 0:
+                this_init_fns.extend([self.env_init_fn_dills[0]] * n_diff)
+            assert len(this_init_fns) == n_envs
+
+            # Init envs
+            env.call_each('run_dill_function',
+                args_list=[(x,) for x in this_init_fns])
+
+            # Start evaluation rollout without noise
+            self._run_eval_chunk(
+                env, policy, device,
+                this_n_active_envs, chunk_idx, n_chunks
+            )
+
+            # Collect standard data for this round
+            all_video_paths[this_global_slice] = env.render()[this_local_slice]
+            all_rewards[this_global_slice] = env.call('get_attr', 'reward')[this_local_slice]
+
+        # Clear out video buffer
+        _ = env.reset()
+
+        # Standard logging (inherited from parent)
+        log_data = self._log_standard_metrics(all_video_paths, all_rewards, n_inits)
+
+        # Return evaluation results
+        result = {
+            'log_data': log_data,
+            'video_paths': all_video_paths,
+            'episode_rewards': all_rewards,
+        }
+
+        print(f"✅ Evaluation rollout completed")
+
+        return log_data  # Return just log_data for compatibility with SFT workspace pattern
+
+    def _run_eval_chunk(self, env, policy: ManiFlowRLPointcloudPolicy, device,
+                       n_active_envs: int, chunk_idx: int, n_chunks: int) -> None:
+        """Run evaluation for one chunk of environments without noise."""
+
+        # Start rollout
+        obs = env.reset()
+        past_action = None
+        policy.reset()
+
+        env_name = self.env_meta['env_name']
+        pbar = tqdm.tqdm(total=self.max_steps, desc=f"Eval {env_name} {chunk_idx+1}/{n_chunks}",
+            leave=False, mininterval=self.tqdm_interval_sec)
+
+        step_count = 0
+        done = False
+        while not done and step_count < self.max_steps:
+            # Create obs dict
+            np_obs_dict = dict(obs)
+            if self.past_action and (past_action is not None):
+                np_obs_dict['past_action'] = past_action[
+                    :,-(self.n_obs_steps-1):].astype(np.float32)
+
+            # Device transfer
+            obs_dict = dict_apply(np_obs_dict,
+                lambda x: torch.from_numpy(x).to(device=device))
+
+            # Run policy WITHOUT exploration noise
+            with torch.no_grad():
+                # Use sample_actions in eval mode (no noise)
+                sample_result = policy.sample_actions(
+                    obs_dict,
+                    mode="eval",  # Use eval mode - no exploration noise
+                    compute_values=False  # No need for values in evaluation
+                )
+
+                # Extract only actions
+                action = sample_result['actions'].detach().cpu().numpy()  # [B, action_chunk, action_dim]
+
+            # Check for nan/inf
+            if not np.all(np.isfinite(action)):
+                print(f"Warning: Non-finite action at step {step_count}")
+                print(action)
+                raise RuntimeError("Nan or Inf action")
+
+            # Step environment
+            env_action = action
+            if self.abs_action:
+                env_action = self.undo_transform_action(action)
+
+            obs, reward, done_array, info = env.step(env_action)
+
+            # Handle done flags
+            individual_dones = done_array[:n_active_envs].copy()  # [n_active_envs]
+            done = np.all(done_array[:n_active_envs])
+
+            past_action = action
+            step_count += 1
+
+            # Update progress bar
+            pbar.update(action.shape[1] if len(action.shape) > 1 else 1)
+
+        pbar.close()
+
+    def run(self, policy: BaseImagePolicy, eval_mode: bool = False):
         """
         Override run method to handle both standard and RL policies.
+
+        Args:
+            policy: The policy to run
+            eval_mode: If True, run in evaluation mode (no exploration noise)
+                      If False, run in training mode (with exploration noise)
         """
-        if isinstance(policy, ManiFlowRLPointcloudPolicy) and self.collect_rl_data:
-            return self.run_rl(policy)
+        if isinstance(policy, ManiFlowRLPointcloudPolicy):
+            if eval_mode:
+                return self.run_eval(policy)
+            elif self.collect_rl_data:
+                return self.run_rl(policy)
+            else:
+                return self.run_eval(policy)  # Standard rollout without RL data collection
         else:
-            # Fall back to parent class behavior
+            # Fall back to parent class behavior for non-RL policies
             return super().run(policy)
 
 

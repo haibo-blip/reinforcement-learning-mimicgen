@@ -90,7 +90,7 @@ rl_training:
   ppo_trainer:
     # PPO hyperparameters
     clip_ratio: 0.2
-    entropy_coef: 0.01
+    entropy_coef: 0
     value_loss_coef: 0.5
     max_grad_norm: 0.5
 

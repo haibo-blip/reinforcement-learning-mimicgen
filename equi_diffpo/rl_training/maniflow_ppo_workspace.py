@@ -16,7 +16,7 @@ import wandb
 from pathlib import Path
 import json
 
-from .maniflow_rollout_collector import ManiFlowRolloutCollector, ManiFlowRolloutBatch, ManiFlowDummyEnvRunner
+from .maniflow_rollout_collector import ManiFlowRolloutCollector, ManiFlowRolloutBatch
 from .maniflow_advantage_calculator import ManiFlowAdvantageCalculator, AdvantageConfig
 from .rl_utils import masked_mean
 from equi_diffpo.policy.maniflow.maniflow_pointcloud_rl_policy import ManiFlowRLPointcloudPolicy
@@ -244,7 +244,7 @@ class ManiFlowPPOTrainer:
         num_updates = 0
         early_stop = False
 
-        # Set policy to training mode
+        # Following RLinf pattern: Set policy to training mode only for gradient updates
         self.policy.train()
 
         for epoch in range(self.config.num_epochs):
@@ -309,6 +309,9 @@ class ManiFlowPPOTrainer:
 
         # Update policy global step for noise annealing
         self.policy.set_global_step(self.global_step)
+
+        # Following RLinf pattern: Restore policy to eval mode after training
+        self.policy.eval()
 
         print(f"  ✅ PPO training completed: {num_updates} updates across {epoch + 1} epochs")
         print(f"    - Policy loss: {stats['policy_loss']:.6f}")
@@ -513,166 +516,38 @@ class ManiFlowPPOTrainer:
         print(f"💾 Checkpoint saved: {checkpoint_path}")
 
     def _run_evaluation(self) -> None:
-        """Run evaluation episodes."""
+        """Run evaluation episodes following SFT workspace pattern."""
         print("🔍 Running evaluation...")
 
-        # TODO: Implement evaluation with separate test environments
-        # For now, just log current training performance
+        # Set policy to evaluation mode
+        self.policy.eval()
 
-        if self.use_wandb:
-            recent_rewards = self.rollout_metrics['rollout_rewards'][-10:]
-            if recent_rewards:
-                wandb.log({
-                    'eval/mean_reward_10': np.mean(recent_rewards),
-                    'eval/rollout_count': self.rollout_count,
-                }, step=self.global_step)
+        eval_metrics = {}
 
-    def load_checkpoint(self, checkpoint_path: str) -> None:
-        """Load training checkpoint."""
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        with torch.no_grad():
+            # Run evaluation using the same env_runner as training but in eval mode
+            # Use eval_mode=True to disable exploration noise
+            eval_runner_log = self.env_runner.run(self.policy, eval_mode=True)
 
-        self.policy.load_state_dict(checkpoint['policy_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.global_step = checkpoint['global_step']
-        self.rollout_count = checkpoint['rollout_count']
+            # Add eval prefix to all metrics from runner
+            for key, value in eval_runner_log.items():
+                eval_metrics[f'eval/{key}'] = value
 
-        if 'lr_scheduler_state_dict' in checkpoint and self.lr_scheduler is not None:
-            self.lr_scheduler.load_state_dict(checkpoint['lr_scheduler_state_dict'])
+            # Log evaluation metrics
+            print(f"📊 Evaluation Results:")
+            for key, value in eval_metrics.items():
+                if isinstance(value, (int, float)):
+                    print(f"  - {key}: {value:.3f}")
 
-        print(f"📂 Checkpoint loaded: {checkpoint_path}")
-        print(f"  - Global step: {self.global_step:,}")
-        print(f"  - Rollout count: {self.rollout_count}")
+            # Wandb logging
+            if self.use_wandb:
+                eval_metrics['eval/rollout_count'] = self.rollout_count
+                eval_metrics['eval/global_step'] = self.global_step
+                wandb.log(eval_metrics, step=self.global_step)
 
-
-def create_maniflow_ppo_trainer(
-        shape_meta: Dict[str, Any],
-        policy_config: Dict[str, Any] = None,
-        ppo_config: Dict[str, Any] = None,
-        advantage_config: Dict[str, Any] = None,
-        device: str = "cuda",
-        use_dummy_env: bool = True) -> ManiFlowPPOTrainer:
-    """
-    Factory function to create ManiFlow PPO trainer with sensible defaults.
-    """
-
-    # Default policy config
-    if policy_config is None:
-        policy_config = {
-            'horizon': 16,
-            'n_action_steps': 8,
-            'n_obs_steps': 2,
-            'noise_method': "flow_sde",
-            'num_inference_steps': 10,
-            'n_layer': 4,
-            'n_head': 8,
-            'n_emb': 256,
-            'encoder_output_dim': 128,
-            'visual_cond_len': 256,
-            'add_value_head': True,
-            'noise_level': 0.5,
-            'noise_anneal': True,
-        }
-
-    # Create policy
-    policy = ManiFlowRLPointcloudPolicy(
-        shape_meta=shape_meta,
-        **policy_config
-    )
-
-    # Set dummy normalizer (would be loaded from data in real training)
-    normalizer = LinearNormalizer()
-    for key, meta in shape_meta['obs'].items():
-        normalizer[key] = LinearNormalizer()
-        # Create dummy data for fitting normalizer
-        if meta.get('type') == 'rgb':
-            dummy_data = torch.randn(100, *meta['shape'])
-        elif meta.get('type') == 'point_cloud':
-            dummy_data = torch.randn(100, *meta['shape'])
-        else:
-            dummy_data = torch.randn(100, *meta['shape'])
-        normalizer[key].fit(dummy_data)
-
-    normalizer['action'] = LinearNormalizer()
-    normalizer['action'].fit(torch.randn(100, shape_meta['action']['shape'][0]))
-    policy.set_normalizer(normalizer)
-
-    # Create environment runner
-    if use_dummy_env:
-        env_runner = ManiFlowDummyEnvRunner(
-            num_envs=ppo_config.get('num_envs', 4) if ppo_config else 4,
-            action_dim=shape_meta['action']['shape'][0],
-            obs_horizon=policy_config.get('n_obs_steps', 2)
-        )
-    else:
-        # TODO: Create real environment runner
-        raise NotImplementedError("Real environment runner not implemented yet")
-
-    # Create configs
-    ppo_config = PPOConfig(**(ppo_config or {}))
-    advantage_config = AdvantageConfig(**(advantage_config or {}))
-
-    # Create trainer
-    trainer = ManiFlowPPOTrainer(
-        policy=policy,
-        env_runner=env_runner,
-        config=ppo_config,
-        advantage_config=advantage_config,
-        device=device,
-        use_wandb=False  # Disable wandb for testing
-    )
-
-    return trainer
+        # Set policy back to training mode
+        self.policy.train()
 
 
-def test_ppo_training():
-    """Test PPO training with dummy environment."""
-    print("🧪 Testing ManiFlow PPO Training")
-    print("=" * 60)
-
-    # Define shape meta
-    shape_meta = {
-        'obs': {
-            'robot0_eye_in_hand_image': {'shape': [3, 84, 84], 'type': 'rgb'},
-            'point_cloud': {'shape': [1024, 6], 'type': 'point_cloud'},
-            'robot0_eef_pos': {'shape': [3]},
-            'robot0_eef_quat': {'shape': [4]},
-            'robot0_gripper_qpos': {'shape': [2]},
-        },
-        'action': {'shape': [10]}
-    }
-
-    # Create trainer with small config for testing
-    ppo_config = {
-        'total_timesteps': 1000,  # Small for testing
-        'num_envs': 2,
-        'num_steps_per_rollout': 20,
-        'batch_size': 32,
-        'num_epochs': 2,
-        'log_interval': 1,
-        'save_interval': 5,
-    }
-
-    try:
-        trainer = create_maniflow_ppo_trainer(
-            shape_meta=shape_meta,
-            ppo_config=ppo_config,
-            device="cpu"  # Use CPU for testing
-        )
-
-        print("✅ Trainer created successfully!")
-
-        # Run a short training session
-        trainer.train()
-
-        print("✅ PPO training completed successfully!")
-        return True
-
-    except Exception as e:
-        print(f"❌ PPO training failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
 
 
-if __name__ == "__main__":
-    test_ppo_training()

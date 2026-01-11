@@ -12,7 +12,7 @@ import copy
 
 from equi_diffpo.policy.maniflow.maniflow_pointcloud_rl_policy import ManiFlowRLPointcloudPolicy
 from equi_diffpo.model.common.normalizer import LinearNormalizer
-from equi_diffpo.env_runner.robomimic_image_runner import RobomimicImageRunner
+from equi_diffpo.env_runner.base_image_runner import BaseImageRunner
 from equi_diffpo.rl_training.rl_utils import compute_loss_mask
 
 
@@ -102,7 +102,7 @@ class ManiFlowRolloutCollector:
 
     def __init__(self,
                  policy: ManiFlowRLPointcloudPolicy,
-                 env_runner: RobomimicImageRunner,  # Use actual RobomimicImageRunner
+                 env_runner: BaseImageRunner,  # Accept any env runner (will be RobomimicRLRunner)
                  max_steps_per_episode: int = 1000,
                  action_chunk_size: int = 8,
                  obs_chunk_size: int = 2,
@@ -115,7 +115,8 @@ class ManiFlowRolloutCollector:
         self.obs_chunk_size = obs_chunk_size
         self.device = torch.device(device)
 
-        # Set policy to eval mode for rollouts
+        # Following RLinf pattern: Keep policy in eval mode for rollout collection
+        # Exploration is controlled algorithmically via mode parameter, not PyTorch train/eval
         self.policy.eval()
 
         print(f"🎲 ManiFlow Rollout Collector initialized")
@@ -146,7 +147,7 @@ class ManiFlowRolloutCollector:
             # Sample actions with chains (like RLinf sample_actions)
             sample_result = self.policy.sample_actions(
                 obs_dict,
-                mode="eval",  # Use eval mode for rollouts
+                mode="train",  # Use train mode for exploration during rollout collection
                 compute_values=True
             )
 
@@ -266,26 +267,49 @@ class ManiFlowRolloutCollector:
             denoise_inds=denoise_inds
         )
 
-    def collect_rollouts_with_runner(self) -> ManiFlowRolloutBatch:
+    def collect_rollouts(self, num_episodes: Optional[int] = None, num_envs: Optional[int] = None) -> ManiFlowRolloutBatch:
         """
-        Use RobomimicRLRunner to collect rollouts with RL data.
+        Collect rollouts using the real environment runner following RLinf pattern.
+
+        Args:
+            num_episodes: Number of episodes (not used - controlled by env runner config)
+            num_envs: Number of environments (not used - controlled by env runner config)
 
         Returns:
-            ManiFlowRolloutBatch: Collected rollout data
+            ManiFlowRolloutBatch: Collected rollout data for RL training
         """
-        print(f"🎲 Using RobomimicRLRunner for rollout collection...")
+        print(f"🎲 Collecting rollouts using {type(self.env_runner).__name__}...")
 
+        # Following RLinf pattern: Keep policy in eval mode during rollout collection
+        # Exploration is handled algorithmically via mode="train" parameter, not PyTorch train/eval
+        self.policy.eval()
+
+        # Use the real env runner to collect rollouts
         # Check if we have the RL-compatible runner
         if hasattr(self.env_runner, 'run_rl'):
-            # Use RL-specific method
+            # Use RL-specific method that collects step-by-step data
             runner_results = self.env_runner.run_rl(self.policy)
         else:
-            # Fall back to regular run method
-            print("⚠️  Using regular runner - RL data may not be available")
-            runner_results = self.env_runner.run(self.policy)
+            # Fall back to regular run method (should work with eval_mode=False)
+            print("⚠️  Using regular runner - ensure it's RobomimicRLRunner for RL data")
+            runner_results = self.env_runner.run(self.policy, eval_mode=False)
 
         # Convert results to our batch format
-        return self.collect_rollouts_from_runner_results(runner_results)
+        rollout_batch = self.collect_rollouts_from_runner_results(runner_results)
+
+        print(f"✅ Rollout collection completed:")
+        print(f"  - Steps: {rollout_batch.n_chunk_steps}")
+        print(f"  - Batch size: {rollout_batch.batch_size}")
+        print(f"  - Actions: {rollout_batch.actions.shape}")
+
+        return rollout_batch
+
+    def collect_rollouts_with_runner(self) -> ManiFlowRolloutBatch:
+        """
+        Legacy method for backward compatibility.
+        Use collect_rollouts() instead.
+        """
+        return self.collect_rollouts()
 
     def _convert_to_batch(self, steps: List[ManiFlowRolloutStep]) -> ManiFlowRolloutBatch:
         """Convert list of steps to batch format following RLinf pattern."""
