@@ -37,7 +37,7 @@ def setup_wandb(cfg: DictConfig):
     if cfg.get('use_wandb', True):
         wandb_config = {
             'project': cfg.get('wandb_project', 'maniflow_rl'),
-            'name': cfg.get('wandb_run_name', f'rl_training_{cfg.task.env_runner}'),
+            'name': cfg.get('wandb_run_name', f'rl_training_{cfg.task_name}'),
             'config': OmegaConf.to_container(cfg, resolve=True),
             'save_code': True,
         }
