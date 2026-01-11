@@ -35,15 +35,34 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
     # 2. Load pretrained weights if provided
     if pretrained_policy_path:
         print(f"📂 Loading pretrained policy from: {pretrained_policy_path}")
-        # TODO: Load checkpoint and transfer weights to RL policy
-        checkpoint = torch.load(pretrained_policy_path)
-        policy.load_state_dict(checkpoint['policy_state_dict'])
+        checkpoint = torch.load(pretrained_policy_path, map_location=device)
+        # Handle different checkpoint formats
+        if 'state_dicts' in checkpoint and 'model' in checkpoint['state_dicts']:
+            # PyTorch Lightning / diffusion policy checkpoint format
+            state_dict = checkpoint['state_dicts']['model']
+        elif 'policy_state_dict' in checkpoint:
+            # Direct policy state dict format
+            state_dict = checkpoint['policy_state_dict']
+        elif 'state_dict' in checkpoint:
+            # Standard PyTorch checkpoint format
+            state_dict = checkpoint['state_dict']
+        else:
+            # Assume the checkpoint itself is the state dict
+            state_dict = checkpoint
+
+        # Load with strict=False to allow for missing/extra keys (e.g., value_head)
+        missing, unexpected = policy.load_state_dict(state_dict, strict=False)
+        if missing:
+            print(f"⚠️  Missing keys (will be initialized randomly): {missing}")
+        if unexpected:
+            print(f"⚠️  Unexpected keys (ignored): {unexpected}")
 
     # 3. Create RL-compatible environment runner from config
     # Use RobomimicRLRunner instead of regular RobomimicImageRunner
-    env_runner_config = cfg.task.env_runner.copy()
-    env_runner_config._target_ = "equi_diffpo.env_runner.robomimic_rl_runner.RobomimicRLRunner"
-    env_runner_config.collect_rl_data = True
+    env_runner_config = OmegaConf.to_container(cfg.task.env_runner, resolve=True)
+    env_runner_config['_target_'] = "equi_diffpo.env_runner.robomimic_rl_runner.RobomimicRLRunner"
+    env_runner_config['collect_rl_data'] = True
+    env_runner_config = OmegaConf.create(env_runner_config)
     env_runner = hydra.utils.instantiate(env_runner_config, output_dir="./rl_outputs")
 
     # 4. Set up normalizer (load from dataset or checkpoint)
