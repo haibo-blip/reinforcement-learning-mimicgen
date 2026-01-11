@@ -37,7 +37,7 @@ def setup_wandb(cfg: DictConfig):
     if cfg.get('use_wandb', True):
         wandb_config = {
             'project': cfg.get('wandb_project', 'maniflow_rl'),
-            'name': cfg.get('wandb_run_name', f'rl_training_{cfg.task.env_runner.env_meta.env_name}'),
+            'name': cfg.get('wandb_run_name', f'rl_training_{cfg.task.env_runner}'),
             'config': OmegaConf.to_container(cfg, resolve=True),
             'save_code': True,
         }
@@ -158,7 +158,6 @@ def setup_output_directories(cfg: DictConfig):
 @hydra.main(version_base=None, config_path="config", config_name="train_maniflow_pointcloud_rl")
 def main(cfg: DictConfig) -> None:
     """Main training function."""
-
     try:
         # Setup
         print_config_summary(cfg)

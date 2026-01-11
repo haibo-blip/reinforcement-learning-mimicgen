@@ -9,7 +9,7 @@ _target_: equi_diffpo.rl_training.rl_workspace.RLTrainingWorkspace
 shape_meta: ${task.shape_meta}
 exp_name: "maniflow_pc_rl"
 
-task_name: stack_d1
+task_name: nut_assembly_d0
 n_demo: 100
 horizon: 16
 n_obs_steps: 2
@@ -25,7 +25,7 @@ dataset_path: equi_diffpo/data/robomimic/datasets/${task_name}/${task_name}_voxe
 #pretrained_policy_path: "path/to/your/pretrained/checkpoint.ckpt
 # Policy configuration (same as training config)
 policy:
-  _target_: equi_diffpo.policy.maniflow.maniflow_pointcloud_policy.ManiFlowTransformerPointcloudPolicy
+  _target_: equi_diffpo.policy.maniflow.maniflow_pointcloud_rl_policy.ManiFlowRLPointcloudPolicy
   checkpoint: /home/haibo_newtheory_ai/rl_project/maniflow_mimicgen/data/outputs/2026.01.10/19.57.06_train_maniflow_pointcloud_nut_assembly_d0/checkpoints/epoch=0100-test_mean_score=0.180.ckpt
   # ManiFlow parameters
   horizon: ${horizon}
@@ -38,7 +38,7 @@ policy:
   n_layer: 12
   n_head: 8
   n_emb: 768
-  visual_cond_len: 256
+  visual_cond_len: 512
   max_lang_cond_len: 1024
   qkv_bias: True
   qk_norm: True
