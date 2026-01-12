@@ -675,7 +675,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         chains_entropy = []
 
         # Process denoise steps (like OpenPI)
-        joint_logprob = getattr(self, 'joint_logprob', False)
+        joint_logprob = getattr(self, 'joint_logprob', True)
         if joint_logprob:
             # Joint estimation: process all N steps
             num_steps = N
@@ -975,11 +975,12 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         action_env_dim = self.action_dim
 
         # Post-process outputs (like OpenPI)
+        # fix for now
         log_probs = log_probs[
-            :, :, :action_chunk, :action_env_dim
+            :, :, :, :action_env_dim
         ]
         entropy = entropy[
-            :, :, :action_chunk, :action_env_dim
+            :, :, :, :action_env_dim
         ]
 
         # Average over denoise steps and dimensions (like OpenPI)

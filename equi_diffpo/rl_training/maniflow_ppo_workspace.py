@@ -326,7 +326,7 @@ class ManiFlowPPOTrainer:
         """Compute PPO loss following RLinf pattern with loss masking support."""
 
         # Extract data
-        old_logprobs = mini_batch['prev_logprobs']  # [batch, action_chunk, action_dim]
+        old_logprobs = mini_batch['prev_logprobs']  # [batch, N, action_chunk, action_dim]
         advantages = mini_batch['advantages']        # [batch, action_chunk]
         returns = mini_batch['returns']             # [batch, 1]
         loss_mask = mini_batch.get('loss_mask')     # [batch, action_chunk] - mask for valid steps
@@ -335,7 +335,11 @@ class ManiFlowPPOTrainer:
         values = policy_outputs['values']            # [batch]
         entropy = policy_outputs['entropy']          # [batch, 1]
 
-        # Flatten logprobs for ratio computation
+        # Average old_logprobs over N (denoising steps) to match new_logprobs shape
+        # old_logprobs: [batch, N, action_chunk, action_dim] -> [batch, action_chunk, action_dim]
+        old_logprobs = old_logprobs.mean(dim=1)
+
+        # Sum over action_dim to get joint log probability
         old_logprobs_flat = old_logprobs.sum(dim=-1)  # [batch, action_chunk]
         new_logprobs_flat = new_logprobs.sum(dim=-1)  # [batch, action_chunk]
 
