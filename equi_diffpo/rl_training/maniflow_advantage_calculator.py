@@ -97,9 +97,21 @@ class ManiFlowAdvantageCalculator:
         if next_values is None:
             next_values = np.zeros((batch_size, 1), dtype=np.float32)  # Terminal states
 
-        # Following RLinf: Sum rewards across action chunks (not average)
-        # This matches RLinf's chunk_level reward aggregation
-        chunk_rewards = rollout_batch.rewards.sum(axis=2, keepdims=True)  # [n_steps, batch_size, 1]
+        # Handle reward structure: Check if rewards are per-environment or per-action-chunk
+        reward_shape = rollout_batch.rewards.shape  # Could be [n_steps, batch_size, 1] or [n_steps, batch_size, action_chunk]
+
+        if reward_shape[2] == 1:
+            # Case 1: One reward per environment step (most common in robomimic)
+            # Reward shape: [n_steps, batch_size, 1]
+            # This means the reward represents the cumulative effect of all action chunks
+            chunk_rewards = rollout_batch.rewards  # Use as-is
+            print(f"📊 Using per-step rewards: {reward_shape}")
+        else:
+            # Case 2: Rewards per action chunk (following RLinf chunk_level aggregation)
+            # Reward shape: [n_steps, batch_size, action_chunk]
+            # Sum across action chunks as in RLinf
+            chunk_rewards = rollout_batch.rewards.sum(axis=2, keepdims=True)  # [n_steps, batch_size, 1]
+            print(f"📊 Summing per-chunk rewards: {reward_shape} -> {chunk_rewards.shape}")
 
         # Prepare outputs
         advantages = np.zeros((n_steps, batch_size, action_chunk), dtype=np.float32)

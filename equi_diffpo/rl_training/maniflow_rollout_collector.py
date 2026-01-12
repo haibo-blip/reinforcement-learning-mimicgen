@@ -103,14 +103,12 @@ class ManiFlowRolloutCollector:
     def __init__(self,
                  policy: ManiFlowRLPointcloudPolicy,
                  env_runner: BaseImageRunner,  # Accept any env runner (will be RobomimicRLRunner)
-                 max_steps_per_episode: int = 1000,
                  action_chunk_size: int = 8,
                  obs_chunk_size: int = 2,
                  device: str = "cuda"):
 
         self.policy = policy
         self.env_runner = env_runner
-        self.max_steps_per_episode = max_steps_per_episode
         self.action_chunk_size = action_chunk_size
         self.obs_chunk_size = obs_chunk_size
         self.device = torch.device(device)
@@ -122,7 +120,6 @@ class ManiFlowRolloutCollector:
         print(f"🎲 ManiFlow Rollout Collector initialized")
         print(f"  - Action chunk size: {action_chunk_size}")
         print(f"  - Obs chunk size: {obs_chunk_size}")
-        print(f"  - Max steps per episode: {max_steps_per_episode}")
 
     def predict_action_batch(self, env_obs: Dict[str, np.ndarray]) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
@@ -230,7 +227,7 @@ class ManiFlowRolloutCollector:
 
         # Compute loss mask
         loss_mask, loss_mask_sum = compute_loss_mask(dones_with_bootstrap)
-        import ipdb; ipdb.set_trace()
+
         # Convert back to numpy
         loss_mask_np = loss_mask.numpy()
         loss_mask_sum_np = loss_mask_sum.numpy()

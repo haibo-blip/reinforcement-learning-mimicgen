@@ -218,7 +218,7 @@ class ManiFlowPPOTrainer:
         Args:
             rollout_batch: Collected rollout data with advantages and returns
 
-        Returns:
+        Returns:run_ppo_training
             Training statistics
         """
         print("🔥 Running PPO training...")

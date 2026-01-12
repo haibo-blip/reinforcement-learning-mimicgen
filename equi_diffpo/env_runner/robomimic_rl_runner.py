@@ -152,7 +152,7 @@ class RobomimicRLRunner(RobomimicImageRunner):
 
         step_count = 0
         # 步数固定，不检查 done（done 只用于 loss mask）
-        while step_count < self.max_steps:
+        while step_count < math.ceil(self.max_steps / 16):
             # Create obs dict
             np_obs_dict = dict(obs)
             if self.past_action and (past_action is not None):
@@ -176,7 +176,7 @@ class RobomimicRLRunner(RobomimicImageRunner):
                 )
 
                 # Extract actions and RL data
-                action = sample_result['actions'].detach().cpu().numpy()  # [B, action_chunk, action_dim]
+                action = sample_result['action_pred'].detach().cpu().numpy()  # [B, action_chunk, action_dim]
                 prev_logprobs = sample_result['prev_logprobs'].detach().cpu().numpy()
                 prev_values = sample_result['prev_values'].detach().cpu().numpy()
                 chains = sample_result['chains'].detach().cpu().numpy()
@@ -201,16 +201,23 @@ class RobomimicRLRunner(RobomimicImageRunner):
 
             # Store step data (only for active envs)
             episode_actions.append(action[:n_active_envs])
-            episode_rewards.append(reward[:n_active_envs])
-            episode_dones.append(individual_dones)
+
+            # Handle reward structure: env returns [n_envs] but we need consistent shape
+            # Convert to [n_active_envs, 1] for consistency with GAE calculation
+            step_rewards = reward[:n_active_envs]
+            if len(step_rewards.shape) == 1:
+                step_rewards = step_rewards.reshape(-1, 1)  # [n_active_envs, 1]
+            episode_rewards.append(step_rewards)
+
+            episode_dones.append(individual_dones[:n_active_envs])
             episode_prev_logprobs.append(prev_logprobs[:n_active_envs])
             episode_prev_values.append(prev_values[:n_active_envs])
             episode_chains.append(chains[:n_active_envs])
             episode_denoise_inds.append(denoise_inds[:n_active_envs])
 
             past_action = action
-            step_count += 1
-            import ipdb; ipdb.set_trace()
+            step_count += action.shape[1]
+
             # Update progress bar
             pbar.update(action.shape[1] if len(action.shape) > 1 else 1)
 
@@ -255,10 +262,10 @@ class RobomimicRLRunner(RobomimicImageRunner):
         print(f"📊 Combining {len(chunk_data_list)} chunks: n_steps={total_steps}, total_envs={total_envs}")
 
         # Actions: [n_steps, n_envs, action_chunk, action_dim]
-        actions_per_chunk = [np.stack(chunk['actions'], axis=0) for chunk in chunk_data_list]
+        actions_per_chunk = [np.stack(chunk['actions'], axis=1) for chunk in chunk_data_list]
         combined_actions = np.concatenate(actions_per_chunk, axis=1)
 
-        # Rewards: [n_steps, n_envs, action_chunk]
+        # Rewards: [n_steps, n_envs, 1] (one reward per environment step)
         rewards_per_chunk = [np.stack(chunk['rewards'], axis=0) for chunk in chunk_data_list]
         combined_rewards = np.concatenate(rewards_per_chunk, axis=1)
 
@@ -266,7 +273,7 @@ class RobomimicRLRunner(RobomimicImageRunner):
         dones_per_chunk = [np.stack(chunk['dones'], axis=0) for chunk in chunk_data_list]
         combined_dones = np.concatenate(dones_per_chunk, axis=1)
 
-        # Prev logprobs: [n_steps, n_envs, action_chunk, action_dim]
+        # Prev logprobs: [n_steps, n_envs,N, action_chunk, action_dim]
         logprobs_per_chunk = [np.stack(chunk['prev_logprobs'], axis=0) for chunk in chunk_data_list]
         combined_prev_logprobs = np.concatenate(logprobs_per_chunk, axis=1)
 
@@ -518,7 +525,7 @@ class RobomimicRLRunner(RobomimicImageRunner):
             done = np.all(done_array[:n_active_envs])
 
             past_action = action
-            step_count += 1
+            step_count += action.shape[1]
 
             # Update progress bar
             pbar.update(action.shape[1] if len(action.shape) > 1 else 1)

@@ -32,7 +32,7 @@ policy:
   horizon: ${horizon}
   n_action_steps: ${n_action_steps}
   n_obs_steps: ${n_obs_steps}
-  num_inference_steps: 10
+  num_inference_steps: 3
   obs_as_global_cond: True
 
   # DiTX Transformer architecture

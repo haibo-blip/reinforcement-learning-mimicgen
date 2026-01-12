@@ -301,18 +301,33 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         """Set global step for noise annealing."""
         self.global_step = global_step
 
+    def compute_value(self, vis_cond: torch.Tensor) -> torch.Tensor:
+        """
+        Compute state value from observation features (called ONCE per sample).
+
+        This method should be called once per observation, not per denoising step,
+        since V(s) is a function of state only.
+
+        Args:
+            vis_cond: Visual conditioning [B, n_obs_steps*L, obs_feature_dim]
+
+        Returns:
+            value: State value [B]
+        """
+        if self.value_head is None:
+            return torch.zeros(vis_cond.shape[0], device=vis_cond.device)
+
+        # Pool observation features across sequence dimension for value estimation
+        obs_features_pooled = vis_cond.mean(dim=1)  # [B, obs_feature_dim]
+        return self.value_head(obs_features_pooled).squeeze(-1)  # [B]
+
     def train(self, mode: bool = True):
         """Set training mode (adds noise like Pi0.5)."""
-        if mode:
-            self._training_mode = True
-        else:
-            self._training_mode = False
-        return super().train(mode)
+        self._training_mode = True
 
     def eval(self):
         """Set evaluation mode (deterministic, no noise like Pi0.5)."""
         self._training_mode = False
-        return super().eval()
 
     def get_current_noise_level(self) -> float:
         """Get current noise level (with annealing if enabled)."""
@@ -377,9 +392,9 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
                            t,
                            target_t,
                            vis_cond: Optional[torch.Tensor] = None,
-                           lang_cond: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                           lang_cond: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Get step prediction including mean, std, and value (matching Pi0.5 pattern).
+        Get step prediction for mean and std only (value computed separately via compute_value).
 
         Args:
             x_t: Current state [B, T, Da]
@@ -391,7 +406,6 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         Returns:
             x_t_mean: Predicted mean [B, T, Da]
             x_t_std: Predicted std [B, T, Da]
-            value_t: State value [B] (dummy for now)
         """
         device = x_t.device
         B = x_t.shape[0]
@@ -408,7 +422,8 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             target_t_tensor = torch.full((B,), target_t, device=device, dtype=x_t.dtype)
         else:
             target_t_tensor = target_t.to(device=device, dtype=x_t.dtype)
-        target_t_tensor_for_model=torch.full((B,), target_t, device=device, dtype=x_t.dtype)
+        target_t_tensor_for_model = torch.full((B,), target_t, device=device, dtype=x_t.dtype)
+
         # Get velocity prediction
         v_pred = self.model(
             sample=x_t,
@@ -479,15 +494,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
 
         x_t_mean = x0_pred * x0_weight + x1_pred * x1_weight
 
-        # Compute values using value head (like Pi0.5)
-        if self.value_head is not None and vis_cond is not None:
-            # Pool observation features across sequence dimension for value estimation
-            obs_features_pooled = vis_cond.mean(dim=1)  # [B, obs_feature_dim]
-            value_t = self.value_head(obs_features_pooled).squeeze(-1)  # [B]
-        else:
-            value_t = torch.zeros(B, device=device)
-
-        return x_t_mean, x_t_std, value_t
+        return x_t_mean, x_t_std
 
     def sample_ode(self,
                    x0: torch.Tensor,
@@ -515,60 +522,36 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             Dictionary containing:
             - 'actions': Final sampled trajectory [B, T, Da]
             - 'chains': Sampling chain if return_chains=True [B, N+1, T, Da]
+            - 'prev_values': State value if return_chains=True [B, 1]
             - 'denoise_inds': Denoise indices if provided [B, N]
         """
         device = x0.device
         B = x0.shape[0]
         dt = 1.0 / N
 
+        # Compute value ONCE before the denoising loop (not per step)
+        # V(s) is a function of state only, not denoising timestep
+        value = self.compute_value(vis_cond)  # [B]
+
         # Initialize like Pi0.5
         x_t = x0.clone()  # Start with initial noise
         chains = []
         log_probs = []
-        values = []
 
         # Record initial state (like Pi0.5)
         chains.append(x_t)
 
-        # Generate denoise indices if not provided (like Pi0.5)
-        if denoise_inds is None:
-            if self._training_mode:
-                # Training mode: random sampling of denoise indices
-                if hasattr(self, 'joint_logprob') and self.joint_logprob:
-                    # Joint logprob: sample all steps
-                    denoise_inds = torch.arange(N).unsqueeze(0).repeat(B, 1)
-                else:
-                    # Single random step per batch element
-                    random_step = torch.randint(0, N, (B,))
-                    denoise_inds = random_step.unsqueeze(1).repeat(1, N)
-            else:
-                # Eval mode: no specific denoise index (-1)
-                denoise_inds = torch.full((B, N), -1, device=device)
+        denoise_inds = torch.arange(N).unsqueeze(0).repeat(B, 1).to(device)
 
-        denoise_inds = denoise_inds.to(device)
-
-        # Denoise steps (like Pi0.5)
+        # Denoise steps (like Pi0.5) - no value computation inside loop
         for i in range(N):
             t = 1.0 - i * dt  # Start from t=1 (noise) to t=0 (data)
             target_t = 1.0 - (i + 1) * dt
 
-            # Determine sample mode based on denoise_inds (like Pi0.5)
-            if i == denoise_inds[0][i]:
-                sample_mode = "train"
-            else:
-                sample_mode = "eval"
-
-            # Get step prediction (matching Pi0.5 pattern)
-            # Temporarily override training mode for this step
-            original_mode = self._training_mode
-            self._training_mode = (sample_mode == "train")
-
-            x_t_mean, x_t_std, value_t = self.get_step_prediction(
+            # Get only mean and std (value computed once above)
+            x_t_mean, x_t_std = self.get_step_prediction(
                 x_t, t, target_t, vis_cond, lang_cond
             )
-
-            # Restore original mode
-            self._training_mode = original_mode
 
             # SDE step (exactly like Pi0.5): add fresh noise
             # Pi0.5: x_t = x_t_mean + self.sample_noise(x_t.shape, device) * x_t_std
@@ -579,7 +562,6 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             log_prob = self.get_logprob_norm(x_t, x_t_mean, x_t_std)
 
             # Store results (like Pi0.5)
-            values.append(value_t)
             chains.append(x_t)
             log_probs.append(log_prob)
 
@@ -592,12 +574,11 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         if return_chains:
             chains = torch.stack(chains, dim=1)  # [B, N+1, T, Da]
             log_probs = torch.stack(log_probs, dim=1)  # [B, N, ...]
-            values = torch.stack(values, dim=1) if values else torch.zeros(B, N, device=device)
 
             result.update({
                 'chains': chains,
                 'prev_logprobs': log_probs,
-                'prev_values': values,
+                'prev_values': value.unsqueeze(-1),  # [B, 1] - single value per sample
                 'denoise_inds': denoise_inds,
             })
 
@@ -615,6 +596,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         Returns:
             log_prob: Log probabilities [B, T, Da]
         """
+        import ipdb; ipdb.set_trace()
         if self.safe_get_logprob:
             # Simplified version for numerical stability
             log_prob = -torch.pow((sample - mu), 2)
@@ -667,9 +649,9 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             compute_values: Whether to compute values
 
         Returns:
-            log_probs: Log probabilities [B, N, horizon, action_dim]
-            values: Value estimates [B, N]
-            entropy: Entropy estimates [B, N, horizon, action_dim]
+            log_probs: Log probabilities [B, num_steps, horizon, action_dim]
+            values: Value estimates [B] - single value per sample (not per denoising step)
+            entropy: Entropy estimates [B, num_steps, horizon, action_dim]
         """
         B = chains.shape[0]
         N = denoise_inds.shape[1]
@@ -682,8 +664,14 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         if self.language_conditioned:
             lang_cond = observation.get('task_name', None)
 
+        # Compute value ONCE (not per denoising step)
+        # V(s) is a function of state only
+        if compute_values:
+            value = self.compute_value(vis_cond)  # [B]
+        else:
+            value = torch.zeros(B, device=chains.device)
+
         chains_log_probs = []
-        chains_values = []
         chains_entropy = []
 
         # Process denoise steps (like OpenPI)
@@ -701,15 +689,15 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             chains_log_probs.append(initial_log_prob)
             chains_entropy.append(initial_entropy)
 
-            # Process each step
+            # Process each step - no value computation inside loop
             for idx in range(num_steps):
                 denoise_ind = denoise_inds[:, idx]
                 chains_pre = chains[torch.arange(B), denoise_ind]
                 chains_next = chains[torch.arange(B), denoise_ind + 1]
 
-                # Get step prediction
-                x_t_mean, x_t_std, value_t = self.get_step_prediction_for_logprob(
-                    chains_pre, denoise_ind, vis_cond, lang_cond, compute_values
+                # Get step prediction (mean and std only)
+                x_t_mean, x_t_std = self.get_step_prediction_for_logprob(
+                    chains_pre, denoise_ind, vis_cond, lang_cond
                 )
 
                 # Compute log probability and entropy
@@ -718,7 +706,6 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
 
                 chains_log_probs.append(log_probs)
                 chains_entropy.append(entropy)
-                chains_values.append(value_t)
         else:
             # Single step: use only the first denoise index per batch element
             # This matches the RLinf pattern where only one random timestep per batch is sampled
@@ -726,9 +713,9 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             chains_pre = chains[torch.arange(B), denoise_ind]
             chains_next = chains[torch.arange(B), denoise_ind + 1]
 
-            # Get step prediction
-            x_t_mean, x_t_std, value_t = self.get_step_prediction_for_logprob(
-                chains_pre, denoise_ind, vis_cond, lang_cond, compute_values
+            # Get step prediction (mean and std only)
+            x_t_mean, x_t_std = self.get_step_prediction_for_logprob(
+                chains_pre, denoise_ind, vis_cond, lang_cond
             )
 
             # Compute log probability and entropy
@@ -737,11 +724,9 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
 
             chains_log_probs.append(log_probs)
             chains_entropy.append(entropy)
-            chains_values.append(value_t)
 
         # Stack results (handling both joint and single cases)
         chains_log_probs = torch.stack(chains_log_probs, dim=1)  # [B, num_log_probs, ...]
-        chains_values = torch.stack(chains_values, dim=1) if chains_values else torch.zeros(B, len(chains_log_probs), device=chains.device)
 
         # Entropy handling (like OpenPI)
         if self.noise_method == "flow_noise":
@@ -749,48 +734,41 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         else:
             chains_entropy = torch.zeros_like(chains_log_probs)
 
-        return chains_log_probs, chains_values, chains_entropy
+        # Return single value per sample [B], not [B, N]
+        return chains_log_probs, value, chains_entropy
 
     def get_step_prediction_for_logprob(self,
                                        x_t: torch.Tensor,
                                        denoise_ind: torch.Tensor,
                                        vis_cond: torch.Tensor,
-                                       lang_cond: Optional[torch.Tensor],
-                                       compute_values: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                                       lang_cond: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Get step prediction for log probability computation.
+
+        Note: Value is computed separately via compute_value(), not here.
 
         Args:
             x_t: Current state [B, horizon, action_dim]
             denoise_ind: Denoise indices [B]
             vis_cond: Visual conditioning
             lang_cond: Language conditioning
-            compute_values: Whether to compute values
 
         Returns:
             x_t_mean: Predicted mean [B, horizon, action_dim]
             x_t_std: Predicted std [B, horizon, action_dim]
-            value_t: Value estimates [B] or zeros
         """
-        B = x_t.shape[0]
-        device = x_t.device
-
         # Convert denoise_ind to timestep
         N = self.num_inference_steps
         dt = 1.0 / N
         t = 1.0 - denoise_ind.float() * dt
         target_t = 1.0 - (denoise_ind.float() + 1) * dt
 
-        # Get prediction (similar to get_step_prediction)
-        x_t_mean, x_t_std, value_t = self.get_step_prediction(
+        # Get prediction (mean and std only)
+        x_t_mean, x_t_std = self.get_step_prediction(
             x_t, t, target_t, vis_cond, lang_cond
         )
 
-        # Ensure value_t is correct shape
-        if not compute_values or self.value_head is None:
-            value_t = torch.zeros(B, device=device)
-
-        return x_t_mean, x_t_std, value_t
+        return x_t_mean, x_t_std
 
     def conditional_sample(self,
                           condition_data: torch.Tensor,
@@ -907,10 +885,10 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         # Add chains and related data if requested (like Pi0.5)
         if return_chains:
             # Unnormalize chains as well
-            chains_unnorm = self.normalizer['action'].unnormalize(sample_result['chains'])
+            # chains_unnorm = self.normalizer['action'].unnormalize(sample_result['chains'])
 
             result.update({
-                'chains': chains_unnorm,
+                'chains': sample_result['chains'],
                 'prev_logprobs': sample_result['prev_logprobs'],
                 'prev_values': sample_result['prev_values'],
                 'denoise_inds': sample_result['denoise_inds'],
@@ -984,6 +962,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         observation = data["observation"]
 
         # Get log probs, values, entropy from chains (like OpenPI)
+        # value_t is now [B] (single value per sample, not per denoising step)
         log_probs, value_t, entropy = self.get_log_prob_value(
             observation,
             chains,
@@ -1006,11 +985,11 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         # Average over denoise steps and dimensions (like OpenPI)
         log_probs = log_probs.mean(dim=1)  # Average over denoise steps [B, action_chunk, action_dim]
         entropy = entropy.mean(dim=[1, 2, 3], keepdim=False)[:, None]  # [B, 1] to align with loss mask
-        value_t = value_t.mean(dim=-1, keepdim=False)  # [B]
+        # value_t is already [B] - no need to average over denoising steps anymore
 
         return {
             "logprobs": log_probs,
-            "values": value_t,
+            "values": value_t,  # [B] - single value per sample
             "entropy": entropy,
         }
 
