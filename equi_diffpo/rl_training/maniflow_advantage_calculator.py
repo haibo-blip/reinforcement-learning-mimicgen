@@ -79,11 +79,13 @@ class ManiFlowAdvantageCalculator:
                                 rollout_batch: ManiFlowRolloutBatch,
                                 next_values: Optional[np.ndarray] = None) -> ManiFlowRolloutBatch:
         """
-        Calculate GAE advantages following RLinf pattern.
+        Calculate GAE advantages following RLinf OpenPI pattern.
 
-        GAE formula:
-        δ_t = r_t + γ * V(s_{t+1}) - V(s_t)
-        A_t = δ_t + γ * λ * A_{t+1}
+        RLinf GAE formula:
+        δ_t = r_t + γ * V(s_{t+1}) * (~done_{t+1}) - V(s_t)
+        A_t = δ_t + γ * λ * (~done_{t+1}) * A_{t+1}
+
+        Key difference from standard GAE: RLinf sums rewards across action chunks
         """
         n_steps, batch_size = rollout_batch.rewards.shape[:2]
         action_chunk = rollout_batch.rewards.shape[2]
@@ -95,39 +97,38 @@ class ManiFlowAdvantageCalculator:
         if next_values is None:
             next_values = np.zeros((batch_size, 1), dtype=np.float32)  # Terminal states
 
-        # Compute advantages per action chunk
+        # Following RLinf: Sum rewards across action chunks (not average)
+        # This matches RLinf's chunk_level reward aggregation
+        chunk_rewards = rollout_batch.rewards.sum(axis=2, keepdims=True)  # [n_steps, batch_size, 1]
+
+        # Prepare outputs
         advantages = np.zeros((n_steps, batch_size, action_chunk), dtype=np.float32)
         returns = np.zeros((n_steps, batch_size, 1), dtype=np.float32)
 
-        # Work backwards through time
-        next_advantage = 0.0
-        next_value = next_values  # [batch_size, 1]
+        # Create full value sequence with bootstrap [n_steps+1, batch_size, 1]
+        values_with_bootstrap = np.concatenate([values, next_values.reshape(1, batch_size, 1)], axis=0)
 
-        for t in reversed(range(n_steps)):
+        # GAE calculation: work backwards through time
+        gae = np.zeros((batch_size, 1), dtype=np.float32)
+
+        for step in reversed(range(n_steps)):
             # Current step data
-            rewards = rollout_batch.rewards[t]      # [batch_size, action_chunk]
-            dones = rollout_batch.dones[t]          # [batch_size, 1]
-            current_values = values[t]              # [batch_size, 1]
+            reward = chunk_rewards[step]            # [batch_size, 1] - sum across chunks
+            done = rollout_batch.dones[step]        # [batch_size, 1]
+            current_value = values_with_bootstrap[step]       # [batch_size, 1]
+            next_value = values_with_bootstrap[step + 1]      # [batch_size, 1]
 
-            # Compute deltas per action chunk
-            # Average reward across chunks for value estimation
-            avg_reward = rewards.mean(axis=1, keepdims=True)  # [batch_size, 1]
+            # TD error following RLinf pattern
+            delta = reward + self.config.gamma * next_value * (1.0 - done) - current_value
 
-            # TD error: δ_t = r_t + γ * V(s_{t+1}) * (1 - done) - V(s_t)
-            delta = avg_reward + self.config.gamma * next_value * (1.0 - dones) - current_values
+            # GAE advantage recursion following RLinf pattern
+            gae = delta + self.config.gamma * self.config.gae_lambda * (1.0 - done) * gae
 
-            # GAE advantage: A_t = δ_t + γ * λ * (1 - done) * A_{t+1}
-            advantage = delta + self.config.gamma * self.config.gae_lambda * (1.0 - dones) * next_advantage
+            # Store advantage for this step (broadcast to all action chunks)
+            advantages[step] = np.tile(gae, (1, action_chunk))  # [batch_size, action_chunk]
 
-            # Store advantages per action chunk (broadcast advantage to all chunks)
-            advantages[t] = np.tile(advantage, (1, action_chunk))  # [batch_size, action_chunk]
-
-            # Compute returns: R_t = A_t + V(s_t)
-            returns[t] = advantage + current_values
-
-            # Update for next iteration
-            next_advantage = advantage
-            next_value = current_values
+            # Compute returns following RLinf: returns = advantages + values
+            returns[step] = gae + current_value
 
         # Normalize advantages if requested
         if self.config.normalize_advantages:
