@@ -230,7 +230,7 @@ class ManiFlowRolloutCollector:
 
         # Compute loss mask
         loss_mask, loss_mask_sum = compute_loss_mask(dones_with_bootstrap)
-
+        import ipdb; ipdb.set_trace()
         # Convert back to numpy
         loss_mask_np = loss_mask.numpy()
         loss_mask_sum_np = loss_mask_sum.numpy()
