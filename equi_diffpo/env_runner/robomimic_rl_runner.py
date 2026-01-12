@@ -210,7 +210,7 @@ class RobomimicRLRunner(RobomimicImageRunner):
 
             past_action = action
             step_count += 1
-
+            import ipdb; ipdb.set_trace()
             # Update progress bar
             pbar.update(action.shape[1] if len(action.shape) > 1 else 1)
 
