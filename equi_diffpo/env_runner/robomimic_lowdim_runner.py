@@ -200,7 +200,7 @@ class RobomimicLowdimRunner(BaseLowdimRunner):
                     if enable_render:
                         filename = pathlib.Path(output_dir).joinpath(
                             'media', wv.util.generate_id() + ".mp4")
-                        filename.parent.mkdir(parents=False, exist_ok=True)
+                        filename.parent.mkdir(parents=True, exist_ok=True)
                         filename = str(filename)
                         env.env.file_path = filename
 
@@ -227,7 +227,7 @@ class RobomimicLowdimRunner(BaseLowdimRunner):
                 if enable_render:
                     filename = pathlib.Path(output_dir).joinpath(
                         'media', wv.util.generate_id() + ".mp4")
-                    filename.parent.mkdir(parents=False, exist_ok=True)
+                    filename.parent.mkdir(parents=True, exist_ok=True)
                     filename = str(filename)
                     env.env.file_path = filename
 

@@ -549,5 +549,40 @@ class ManiFlowPPOTrainer:
         self.policy.train()
 
 
+def create_maniflow_ppo_trainer(
+    policy: ManiFlowRLPointcloudPolicy,
+    env_runner,
+    config: Optional[PPOConfig] = None,
+    advantage_config: Optional[AdvantageConfig] = None,
+    device: str = "cuda",
+    use_wandb: bool = True
+) -> ManiFlowPPOTrainer:
+    """
+    Factory function to create a ManiFlowPPOTrainer.
+
+    Args:
+        policy: ManiFlow RL policy
+        env_runner: Environment runner for collecting rollouts
+        config: PPO training configuration (uses defaults if None)
+        advantage_config: Advantage calculation configuration (uses defaults if None)
+        device: Device to use for training
+        use_wandb: Whether to use wandb logging
+
+    Returns:
+        Configured ManiFlowPPOTrainer instance
+    """
+    if config is None:
+        config = PPOConfig()
+    if advantage_config is None:
+        advantage_config = AdvantageConfig()
+
+    return ManiFlowPPOTrainer(
+        policy=policy,
+        env_runner=env_runner,
+        config=config,
+        advantage_config=advantage_config,
+        device=device,
+        use_wandb=use_wandb
+    )
 
 

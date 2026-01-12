@@ -151,8 +151,8 @@ class RobomimicRLRunner(RobomimicImageRunner):
             leave=False, mininterval=self.tqdm_interval_sec)
 
         step_count = 0
-        done = False
-        while not done and step_count < self.max_steps:
+        # 步数固定，不检查 done（done 只用于 loss mask）
+        while step_count < self.max_steps:
             # Create obs dict
             np_obs_dict = dict(obs)
             if self.past_action and (past_action is not None):
@@ -195,11 +195,9 @@ class RobomimicRLRunner(RobomimicImageRunner):
 
             obs, reward, done_array, info = env.step(env_action)
 
-            # Handle done flags following RLinf pattern
             # Store individual environment done flags (per env tracking)
+            # 不用于控制循环，只用于 loss mask
             individual_dones = done_array[:n_active_envs].copy()  # [n_active_envs]
-            # Check if all environments are done (for loop termination)
-            done = np.all(done_array[:n_active_envs])
 
             # Store step data (only for active envs)
             episode_actions.append(action[:n_active_envs])
@@ -242,71 +240,82 @@ class RobomimicRLRunner(RobomimicImageRunner):
         return copied_obs
 
     def _combine_rl_chunks(self, chunk_data_list: List[Dict]) -> Dict[str, np.ndarray]:
-        """Combine RL data from all environment chunks."""
+        """
+        Combine RL data from all environment chunks.
+
+        每个 chunk 先 stack (沿 step 维度)，再 concatenate (沿 env 维度)。
+        最终 shape: [n_steps, total_envs, ...]
+        """
         if not chunk_data_list:
             return {}
 
-        # Collect data from all chunks
-        all_observations = []
-        all_actions = []
-        all_rewards = []
-        all_dones = []
-        all_prev_logprobs = []
-        all_prev_values = []
-        all_chains = []
-        all_denoise_inds = []
+        total_steps = chunk_data_list[0]['n_steps']  # 所有 chunk 步数相同
+        total_envs = sum(chunk['n_active_envs'] for chunk in chunk_data_list)
 
-        total_steps = 0
-        total_envs = 0
+        print(f"📊 Combining {len(chunk_data_list)} chunks: n_steps={total_steps}, total_envs={total_envs}")
 
-        for chunk_data in chunk_data_list:
-            n_steps = len(chunk_data['actions'])
-            n_envs = chunk_data['n_active_envs']
+        # Actions: [n_steps, n_envs, action_chunk, action_dim]
+        actions_per_chunk = [np.stack(chunk['actions'], axis=0) for chunk in chunk_data_list]
+        combined_actions = np.concatenate(actions_per_chunk, axis=1)
 
-            # Extend with this chunk's data
-            all_observations.extend(chunk_data['observations'])
-            all_actions.extend(chunk_data['actions'])
-            all_rewards.extend(chunk_data['rewards'])
-            all_dones.extend(chunk_data['dones'])
-            all_prev_logprobs.extend(chunk_data['prev_logprobs'])
-            all_prev_values.extend(chunk_data['prev_values'])
-            all_chains.extend(chunk_data['chains'])
-            all_denoise_inds.extend(chunk_data['denoise_inds'])
+        # Rewards: [n_steps, n_envs, action_chunk]
+        rewards_per_chunk = [np.stack(chunk['rewards'], axis=0) for chunk in chunk_data_list]
+        combined_rewards = np.concatenate(rewards_per_chunk, axis=1)
 
-            total_steps += n_steps
-            total_envs = max(total_envs, n_envs)
+        # Dones: [n_steps, n_envs] -> will be expanded to [n_steps, n_envs, 1]
+        dones_per_chunk = [np.stack(chunk['dones'], axis=0) for chunk in chunk_data_list]
+        combined_dones = np.concatenate(dones_per_chunk, axis=1)
 
-        # Convert to numpy arrays with proper shapes
-        # Note: We need to reshape for RL training [n_steps, batch_size, ...]
+        # Prev logprobs: [n_steps, n_envs, action_chunk, action_dim]
+        logprobs_per_chunk = [np.stack(chunk['prev_logprobs'], axis=0) for chunk in chunk_data_list]
+        combined_prev_logprobs = np.concatenate(logprobs_per_chunk, axis=1)
 
-        # Stack observations by key
+        # Prev values: [n_steps, n_envs, 1]
+        values_per_chunk = [np.stack(chunk['prev_values'], axis=0) for chunk in chunk_data_list]
+        combined_prev_values = np.concatenate(values_per_chunk, axis=1)
+
+        # Chains: [n_steps, n_envs, N+1, horizon, action_dim]
+        chains_per_chunk = [np.stack(chunk['chains'], axis=0) for chunk in chunk_data_list]
+        combined_chains = np.concatenate(chains_per_chunk, axis=1)
+
+        # Denoise inds: [n_steps, n_envs, N]
+        denoise_per_chunk = [np.stack(chunk['denoise_inds'], axis=0) for chunk in chunk_data_list]
+        combined_denoise_inds = np.concatenate(denoise_per_chunk, axis=1)
+
+        # Observations: Dict[str, [n_steps, n_envs, ...]]
         combined_observations = {}
-        for key in all_observations[0].keys():
-            obs_list = [obs[key] for obs in all_observations]
-            combined_observations[key] = np.stack(obs_list, axis=0)  # [n_steps, batch_size, ...]
+        obs_keys = chunk_data_list[0]['observations'][0].keys()
+        for key in obs_keys:
+            obs_per_chunk = []
+            for chunk in chunk_data_list:
+                # chunk['observations'] 是 list of dict，每个 dict 是一个 step
+                obs_list = [step_obs[key] for step_obs in chunk['observations']]
+                stacked = np.stack(obs_list, axis=0)  # [n_steps, n_active_envs, ...]
+                obs_per_chunk.append(stacked)
+            combined_observations[key] = np.concatenate(obs_per_chunk, axis=1)
 
-        # Stack other arrays
+        # Ensure dones has shape [n_steps, n_envs, 1]
+        if len(combined_dones.shape) == 2:
+            combined_dones = combined_dones[:, :, np.newaxis]
+
         combined_data = {
             'observations': combined_observations,
-            'actions': np.stack(all_actions, axis=0),           # [n_steps, batch_size, action_chunk, action_dim]
-            'rewards': np.stack(all_rewards, axis=0),           # [n_steps, batch_size, action_chunk]
-            'dones': np.stack(all_dones, axis=0),                       # [n_steps, batch_size]
-            'prev_logprobs': np.stack(all_prev_logprobs, axis=0), # [n_steps, batch_size, action_chunk, action_dim]
-            'prev_values': np.stack(all_prev_values, axis=0),   # [n_steps, batch_size, 1]
-            'chains': np.stack(all_chains, axis=0),             # [n_steps, batch_size, N+1, horizon, action_dim]
-            'denoise_inds': np.stack(all_denoise_inds, axis=0), # [n_steps, batch_size, N]
+            'actions': combined_actions,
+            'rewards': combined_rewards,
+            'dones': combined_dones,
+            'prev_logprobs': combined_prev_logprobs,
+            'prev_values': combined_prev_values,
+            'chains': combined_chains,
+            'denoise_inds': combined_denoise_inds,
             'total_steps': total_steps,
             'total_envs': total_envs,
         }
 
-        # Ensure dones has correct shape [n_steps, batch_size] -> [n_steps, batch_size, 1] for RL training
-        if len(combined_data['dones'].shape) == 2:
-            # Shape is [n_steps, batch_size] - add dimension for consistency with rewards
-            combined_data['dones'] = combined_data['dones'].reshape(combined_data['dones'].shape[0],
-                                                                   combined_data['dones'].shape[1], 1)
-        elif len(combined_data['dones'].shape) == 1:
-            # Handle edge case where it's flattened
-            combined_data['dones'] = combined_data['dones'].reshape(-1, 1, 1)
+        print(f"✅ Combined RL data: [n_steps={total_steps}, n_envs={total_envs}]")
+        print(f"  - actions: {combined_actions.shape}")
+        print(f"  - rewards: {combined_rewards.shape}")
+        print(f"  - dones: {combined_dones.shape}")
+        print(f"  - chains: {combined_chains.shape}")
 
         return combined_data
 

@@ -5,13 +5,76 @@ Factory function to create ManiFlow RL trainer compatible with existing Hydra co
 
 import hydra
 from omegaconf import OmegaConf
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+from pathlib import Path
 import torch
 from .maniflow_ppo_workspace import ManiFlowPPOTrainer, PPOConfig
 from .maniflow_advantage_calculator import AdvantageConfig
-from .maniflow_rollout_collector import ManiFlowRolloutCollector
 from equi_diffpo.policy.maniflow.maniflow_pointcloud_rl_policy import ManiFlowRLPointcloudPolicy
 from equi_diffpo.env_runner.robomimic_rl_runner import RobomimicRLRunner
+from equi_diffpo.model.common.normalizer import LinearNormalizer
+
+
+def get_normalizer_cache_path(dataset_path: str, n_demo: int = 100) -> Path:
+    """Get the cache path for a normalizer based on dataset path."""
+    dataset_path = Path(dataset_path)
+    cache_dir = dataset_path.parent / "normalizer_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_name = f"{dataset_path.stem}_n{n_demo}_normalizer.pt"
+    return cache_dir / cache_name
+
+
+def save_normalizer(normalizer: LinearNormalizer, cache_path: Path) -> None:
+    """Save normalizer to cache file."""
+    torch.save(normalizer.state_dict(), cache_path)
+    print(f"💾 Saved normalizer to: {cache_path}")
+
+
+def load_normalizer(cache_path: Path) -> Optional[LinearNormalizer]:
+    """Load normalizer from cache file if it exists."""
+    if not cache_path.exists():
+        return None
+    normalizer = LinearNormalizer()
+    normalizer.load_state_dict(torch.load(cache_path, weights_only=False))
+    print(f"⚡ Loaded cached normalizer from: {cache_path}")
+    return normalizer
+
+
+def get_or_create_normalizer(cfg: OmegaConf) -> Optional[LinearNormalizer]:
+    """
+    Get normalizer from cache or create from dataset.
+
+    This avoids the slow 25+ minute dataset loading by caching the normalizer
+    after the first run.
+    """
+    if not hasattr(cfg.task, 'dataset') or cfg.task.dataset is None:
+        return None
+
+    # Get dataset path and n_demo for cache key
+    dataset_path = OmegaConf.select(cfg, 'task.dataset.dataset_path') or OmegaConf.select(cfg, 'dataset_path')
+    n_demo = OmegaConf.select(cfg, 'task.dataset.n_demo') or OmegaConf.select(cfg, 'n_demo') or 100
+
+    if not dataset_path:
+        return None
+
+    # Check for cached normalizer
+    cache_path = get_normalizer_cache_path(dataset_path, n_demo)
+    normalizer = load_normalizer(cache_path)
+
+    if normalizer is not None:
+        return normalizer
+
+    # No cache found - need to load dataset (slow)
+    print(f"⏳ No cached normalizer found. Loading dataset (this may take ~25 minutes)...")
+    print(f"   After this, subsequent runs will use the cached normalizer.")
+
+    dataset = hydra.utils.instantiate(cfg.task.dataset)
+    normalizer = dataset.get_normalizer()
+
+    # Save to cache for future runs
+    save_normalizer(normalizer, cache_path)
+
+    return normalizer
 
 
 def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
@@ -65,11 +128,9 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
     env_runner_config = OmegaConf.create(env_runner_config)
     env_runner = hydra.utils.instantiate(env_runner_config, output_dir="./rl_outputs")
 
-    # 4. Set up normalizer (load from dataset or checkpoint)
-    if hasattr(cfg.task, 'dataset'):
-        # Load normalizer from dataset
-        dataset = hydra.utils.instantiate(cfg.task.dataset)
-        normalizer = dataset.get_normalizer()
+    # 4. Set up normalizer (load from cache or dataset)
+    normalizer = get_or_create_normalizer(cfg)
+    if normalizer is not None:
         policy.set_normalizer(normalizer)
         print("✅ Loaded normalizer from dataset")
     else:
@@ -93,6 +154,10 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
         target_kl=0.01,
         wandb_project=cfg.get('logging', {}).get('project', 'maniflow_rl'),
         wandb_run_name=cfg.get('logging', {}).get('name', 'ppo_training'),
+        # Pass max_episode_length from config to avoid duplicate collector with wrong value
+        max_episode_length=cfg.task.env_runner.get('max_steps', 400),
+        action_chunk_size=cfg.get('n_action_steps', 8),
+        obs_chunk_size=cfg.get('n_obs_steps', 2),
     )
 
     # 6. Create advantage config
@@ -103,17 +168,7 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
         normalize_advantages=True,
     )
 
-    # 7. Create rollout collector
-    rollout_collector = ManiFlowRolloutCollector(
-        policy=policy,
-        env_runner=env_runner,
-        max_steps_per_episode=cfg.task.env_runner.get('max_steps', 400),
-        action_chunk_size=cfg.get('n_action_steps', 8),
-        obs_chunk_size=cfg.get('n_obs_steps', 2),
-        device=device
-    )
-
-    # 8. Create RL trainer
+    # 7. Create RL trainer (rollout collector is created internally with correct config)
     trainer = ManiFlowPPOTrainer(
         policy=policy,
         env_runner=env_runner,
@@ -122,9 +177,6 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
         device=device,
         use_wandb=True
     )
-
-    # Override rollout collector to use the configured one
-    trainer.rollout_collector = rollout_collector
 
     print(f"🚀 ManiFlow RL Trainer created from config")
     print(f"  - Policy parameters: {sum(p.numel() for p in policy.parameters()):,}")
