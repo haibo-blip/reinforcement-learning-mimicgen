@@ -100,7 +100,7 @@ rl_training:
 
     # Training parameters
     ppo_epochs: 4
-    mini_batch_size: 64
+    mini_batch_size: 16
     policy_lr: 1.0e-5  # Lower learning rate for fine-tuning
     critic_lr: 1.0e-4
 
