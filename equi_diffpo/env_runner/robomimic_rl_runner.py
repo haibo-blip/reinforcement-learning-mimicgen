@@ -216,7 +216,7 @@ class RobomimicRLRunner(RobomimicImageRunner):
             episode_denoise_inds.append(denoise_inds[:n_active_envs])
 
             past_action = action
-            step_count += action.shape[1]
+            step_count += 1
 
             # Update progress bar
             pbar.update(action.shape[1] if len(action.shape) > 1 else 1)
