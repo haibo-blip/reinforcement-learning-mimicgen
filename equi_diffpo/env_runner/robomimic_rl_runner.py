@@ -262,7 +262,7 @@ class RobomimicRLRunner(RobomimicImageRunner):
         print(f"📊 Combining {len(chunk_data_list)} chunks: n_steps={total_steps}, total_envs={total_envs}")
 
         # Actions: [n_steps, n_envs, action_chunk, action_dim]
-        actions_per_chunk = [np.stack(chunk['actions'], axis=1) for chunk in chunk_data_list]
+        actions_per_chunk = [np.stack(chunk['actions'], axis=0) for chunk in chunk_data_list]
         combined_actions = np.concatenate(actions_per_chunk, axis=1)
 
         # Rewards: [n_steps, n_envs, 1] (one reward per environment step)
