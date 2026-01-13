@@ -989,7 +989,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             denoise_inds,
             compute_values,
         )
-        import ipdb;ipdb.set_trace()
+
         # Extract action chunk dimensions (like OpenPI)
         action_chunk = self.n_action_steps
         action_env_dim = self.action_dim
