@@ -203,7 +203,8 @@ class RobomimicRLRunner(RobomimicImageRunner):
             episode_actions.append(action[:n_active_envs])
 
             # Handle reward structure: env returns [n_envs] but we need consistent shape
-            # Convert to [n_active_envs, 1] for consistency with GAE calculation
+            # Convert to [n_active_envs, 1] - chunk-level reward (one reward per action chunk)
+            # The advantage calculator handles broadcasting to action_chunk dimension
             step_rewards = reward[:n_active_envs]
             if len(step_rewards.shape) == 1:
                 step_rewards = step_rewards.reshape(-1, 1)  # [n_active_envs, 1]
@@ -266,7 +267,7 @@ class RobomimicRLRunner(RobomimicImageRunner):
         actions_per_chunk = [np.stack(chunk['actions'], axis=0) for chunk in chunk_data_list]
         combined_actions = np.concatenate(actions_per_chunk, axis=1)
 
-        # Rewards: [n_steps, n_envs, 1] (one reward per environment step)
+        # Rewards: [n_steps, n_envs, 1] (one reward per chunk/step)
         rewards_per_chunk = [np.stack(chunk['rewards'], axis=0) for chunk in chunk_data_list]
         combined_rewards = np.concatenate(rewards_per_chunk, axis=1)
 

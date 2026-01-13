@@ -239,7 +239,7 @@ class ManiFlowRolloutCollector:
             'actions': (n_steps, batch_size, actions.shape[2], actions.shape[3]),
             'rewards': (n_steps, batch_size, rewards.shape[2]),
             'dones': (n_steps, batch_size, 1),
-            'prev_logprobs': (n_steps, batch_size, prev_logprobs.shape[2], prev_logprobs.shape[3]),
+            'prev_logprobs': (n_steps, batch_size, prev_logprobs.shape[2], prev_logprobs.shape[3], prev_logprobs.shape[4]),
             'prev_values': (n_steps, batch_size, 1),
             'chains': (n_steps, batch_size, chains.shape[2], chains.shape[3], chains.shape[4]),
             'denoise_inds': (n_steps, batch_size, denoise_inds.shape[2]),

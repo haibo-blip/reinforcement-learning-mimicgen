@@ -102,7 +102,6 @@ class ManiFlowPPOTrainer:
         self.rollout_collector = ManiFlowRolloutCollector(
             policy=self.policy,
             env_runner=self.env_runner,
-            max_steps_per_episode=self.config.max_episode_length,
             action_chunk_size=self.config.action_chunk_size,
             obs_chunk_size=self.config.obs_chunk_size,
             device=self.device
@@ -258,8 +257,14 @@ class ManiFlowPPOTrainer:
                 end = min(start + self.config.batch_size, total_samples)
                 batch_indices = indices[start:end]
 
-                # Extract mini-batch
-                mini_batch = {key: value[batch_indices] for key, value in flat_data.items()}
+                # Extract mini-batch (handle observation dict specially)
+                mini_batch = {}
+                for key, value in flat_data.items():
+                    if key == 'observation':
+                        # value is a dict of tensors
+                        mini_batch[key] = {k: v[batch_indices] for k, v in value.items()}
+                    else:
+                        mini_batch[key] = value[batch_indices]
 
                 # Forward pass through policy
                 policy_outputs = self.policy.default_forward(
