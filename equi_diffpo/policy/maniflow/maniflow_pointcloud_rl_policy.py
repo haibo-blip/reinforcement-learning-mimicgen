@@ -596,7 +596,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         Returns:
             log_prob: Log probabilities [B, T, Da]
         """
-        import ipdb; ipdb.set_trace()
+        # import ipdb; ipdb.set_trace()
         if self.safe_get_logprob:
             # Simplified version for numerical stability
             log_prob = -torch.pow((sample - mu), 2)
@@ -934,6 +934,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
 
         return {
             'actions': action_steps,
+            'action_pred': result['action_pred'],
             'chains': result['chains'],
             'prev_logprobs': result['prev_logprobs'],
             'prev_values': result['prev_values'],
