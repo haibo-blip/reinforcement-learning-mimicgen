@@ -339,7 +339,7 @@ class ManiFlowPPOTrainer:
         new_logprobs = policy_outputs['logprobs']    # [batch, action_chunk, action_dim]
         values = policy_outputs['values']            # [batch]
         entropy = policy_outputs['entropy']          # [batch, 1]
-
+        import ipdb;ipdb.set_trace()
         # Average old_logprobs over N (denoising steps) to match new_logprobs shape
         # old_logprobs: [batch, N, action_chunk, action_dim] -> [batch, action_chunk, action_dim]
         old_logprobs = old_logprobs.mean(dim=1)
