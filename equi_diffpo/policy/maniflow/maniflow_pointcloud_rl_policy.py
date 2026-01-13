@@ -676,40 +676,59 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
 
         # Process denoise steps (like OpenPI)
         joint_logprob = getattr(self, 'joint_logprob', True)
-        if joint_logprob:
-            # Joint estimation: process all N steps
-            num_steps = N
-            # Initial log prob for joint estimation
-            initial_log_prob = self.get_logprob_norm(
-                chains[:, 0],
-                torch.zeros_like(chains[:, 0]),
-                torch.ones_like(chains[:, 0]),
-            )
-            initial_entropy = self.gaussian_entropy(torch.ones_like(chains[:, 0]))
-            chains_log_probs.append(initial_log_prob)
-            chains_entropy.append(initial_entropy)
+        # if joint_logprob:
+        #     # Joint estimation: process all N steps
+        #     num_steps = N
+        #     # Initial log prob for joint estimation
+        #     initial_log_prob = self.get_logprob_norm(
+        #         chains[:, 0],
+        #         torch.zeros_like(chains[:, 0]),
+        #         torch.ones_like(chains[:, 0]),
+        #     )
+        #     initial_entropy = self.gaussian_entropy(torch.ones_like(chains[:, 0]))
+        #     chains_log_probs.append(initial_log_prob)
+        #     chains_entropy.append(initial_entropy)
+        #
+        #     # Process each step - no value computation inside loop
+        #     for idx in range(num_steps):
+        #         denoise_ind = denoise_inds[:, idx]
+        #         chains_pre = chains[torch.arange(B), denoise_ind]
+        #         chains_next = chains[torch.arange(B), denoise_ind + 1]
+        #
+        #         # Get step prediction (mean and std only)
+        #         x_t_mean, x_t_std = self.get_step_prediction_for_logprob(
+        #             chains_pre, denoise_ind, vis_cond, lang_cond
+        #         )
+        #
+        #         # Compute log probability and entropy
+        #         log_probs = self.get_logprob_norm(chains_next, x_t_mean, x_t_std)
+        #         entropy = self.gaussian_entropy(x_t_std)
+        #
+        #         chains_log_probs.append(log_probs)
+        #         chains_entropy.append(entropy)
+        # else:
+        #     # Single step: use only the first denoise index per batch element
+        #     # This matches the RLinf pattern where only one random timestep per batch is sampled
+        #     denoise_ind = denoise_inds[:, 0]  # [B] - use first (and likely only) index
+        #     chains_pre = chains[torch.arange(B), denoise_ind]
+        #     chains_next = chains[torch.arange(B), denoise_ind + 1]
+        #
+        #     # Get step prediction (mean and std only)
+        #     x_t_mean, x_t_std = self.get_step_prediction_for_logprob(
+        #         chains_pre, denoise_ind, vis_cond, lang_cond
+        #     )
+        #
+        #     # Compute log probability and entropy
+        #     log_probs = self.get_logprob_norm(chains_next, x_t_mean, x_t_std)
+        #     entropy = self.gaussian_entropy(x_t_std)
+        #
+        #     chains_log_probs.append(log_probs)
+        #     chains_entropy.append(entropy)
+        num_steps = N
 
-            # Process each step - no value computation inside loop
-            for idx in range(num_steps):
-                denoise_ind = denoise_inds[:, idx]
-                chains_pre = chains[torch.arange(B), denoise_ind]
-                chains_next = chains[torch.arange(B), denoise_ind + 1]
-
-                # Get step prediction (mean and std only)
-                x_t_mean, x_t_std = self.get_step_prediction_for_logprob(
-                    chains_pre, denoise_ind, vis_cond, lang_cond
-                )
-
-                # Compute log probability and entropy
-                log_probs = self.get_logprob_norm(chains_next, x_t_mean, x_t_std)
-                entropy = self.gaussian_entropy(x_t_std)
-
-                chains_log_probs.append(log_probs)
-                chains_entropy.append(entropy)
-        else:
-            # Single step: use only the first denoise index per batch element
-            # This matches the RLinf pattern where only one random timestep per batch is sampled
-            denoise_ind = denoise_inds[:, 0]  # [B] - use first (and likely only) index
+        # Process each step - no value computation inside loop
+        for idx in range(num_steps):
+            denoise_ind = denoise_inds[:, idx]
             chains_pre = chains[torch.arange(B), denoise_ind]
             chains_next = chains[torch.arange(B), denoise_ind + 1]
 
@@ -724,7 +743,6 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
 
             chains_log_probs.append(log_probs)
             chains_entropy.append(entropy)
-
         # Stack results (handling both joint and single cases)
         chains_log_probs = torch.stack(chains_log_probs, dim=1)  # [B, num_log_probs, ...]
 
@@ -957,6 +975,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             Dictionary with 'logprobs', 'values', 'entropy'
         """
         # Extract arguments (like OpenPI)
+        self.train()
         compute_values = kwargs.get("compute_values", False)
         chains = data["chains"]  # [B, N+1, horizon, action_dim]
         denoise_inds = data["denoise_inds"]  # [B, N]
@@ -970,7 +989,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             denoise_inds,
             compute_values,
         )
-
+        import ipdb;ipdb.set_trace()
         # Extract action chunk dimensions (like OpenPI)
         action_chunk = self.n_action_steps
         action_env_dim = self.action_dim
