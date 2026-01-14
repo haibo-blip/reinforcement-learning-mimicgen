@@ -13,52 +13,63 @@ def compute_loss_mask(dones: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute loss mask to exclude training on steps after environment termination.
 
-    Follows RLinf pattern: create a mask based on cumulative done states to exclude
-    steps after an environment is finished from loss calculation.
+    Uses cumulative sum along step dimension to detect first termination,
+    then masks out all subsequent steps. The step where done=1 is still valid
+    (the action caused the termination), only steps AFTER done are invalid.
 
     Args:
-        dones: [n_chunk_steps+1, batch_size, num_action_chunks] or [n_steps+1, batch_size, action_chunk]
-               Done flags where True indicates environment termination
+        dones: [n_steps+1, batch_size, action_chunk]
+               Done flags where 1 indicates environment termination.
+               Includes bootstrap step at the end.
 
     Returns:
-        loss_mask: [n_chunk_steps, batch_size, num_action_chunks]
+        loss_mask: [n_steps, batch_size, action_chunk]
                   True for steps that should be included in loss calculation
-        loss_mask_sum: [n_chunk_steps, batch_size, num_action_chunks]
+        loss_mask_sum: [n_steps, batch_size, action_chunk]
                       Sum of valid steps per batch element (broadcasted)
 
     Logic:
-        - Use cumulative sum to find first termination
-        - Mask out all steps after termination
-        - Return inverted mask (True = include in loss)
+        - cumsum along step dimension (dim=0) for each batch independently
+        - Use SHIFTED cumsum: step i checks if done occurred BEFORE step i
+        - step where done=1 is still valid, only steps after are invalid
+
+    Example:
+        dones:          [0, 0, 1, 0]  (step 2 done)
+        cumsum:         [0, 0, 1, 1]
+        shifted_cumsum: [0, 0, 0, 1]  (prepend 0, remove last)
+        mask:           [T, T, T, F]  (step 2 still valid!)
     """
-    # Extract dimensions
-    # Input shape: [n_chunk_steps+1, batch_size, num_action_chunks]
-    n_steps_plus_one, batch_size, num_action_chunks = dones.shape
-    n_chunk_steps = n_steps_plus_one - 1
+    n_steps_plus_one, batch_size, action_chunk = dones.shape
+    n_steps = n_steps_plus_one - 1
 
-    # Flatten to [total_steps, batch_size] for easier processing
-    flattened_dones = dones.transpose(1, 2).reshape(-1, batch_size)
-    # Shape: [(n_chunk_steps+1) * num_action_chunks, batch_size]
+    # Take first action_chunk position (all positions have same done value)
+    # [n_steps+1, batch_size, 1]
+    dones_squeezed = dones[:, :, 0:1]
 
-    # Take the last n_steps + 1 for processing
-    flattened_dones = flattened_dones[-(n_chunk_steps * num_action_chunks + 1):]
-    # Shape: [n_steps+1, batch_size]
+    # Use only actual steps (exclude bootstrap) for cumsum
+    # [n_steps, batch_size, 1]
+    dones_actual = dones_squeezed[:-1]
 
-    # Compute cumulative sum to find first done
-    # cumsum == 0 means environment is still active
-    # cumsum > 0 means environment terminated in previous or current step
-    flattened_loss_mask = (flattened_dones.cumsum(dim=0) == 0)[:-1]
-    # Shape: [n_steps, batch_size] - exclude last step
+    # Cumsum along step dimension (dim=0), independently for each batch
+    # [n_steps, batch_size, 1]
+    cumsum = dones_actual.cumsum(dim=0)
 
-    # Reshape back to [n_chunk_steps, num_action_chunks, batch_size]
-    loss_mask = flattened_loss_mask.reshape(n_chunk_steps, num_action_chunks, batch_size)
+    # Shift cumsum right: prepend 0, remove last
+    # This way step i checks if done occurred BEFORE step i (not at step i)
+    # [n_steps, batch_size, 1]
+    zero_pad = torch.zeros(1, batch_size, 1, dtype=cumsum.dtype, device=cumsum.device)
+    shifted_cumsum = torch.cat([zero_pad, cumsum[:-1]], dim=0)
 
-    # Transpose to [n_chunk_steps, batch_size, num_action_chunks]
-    loss_mask = loss_mask.transpose(1, 2)
+    # shifted_cumsum == 0 means no done has occurred before this step
+    # [n_steps, batch_size, 1]
+    loss_mask = (shifted_cumsum == 0)
+
+    # Broadcast back to full action_chunk dimension
+    # [n_steps, batch_size, action_chunk]
+    loss_mask = loss_mask.expand(-1, -1, action_chunk)
 
     # Compute sum of valid steps per batch element
-    loss_mask_sum = loss_mask.sum(dim=(0, 2), keepdim=True)  # [1, batch_size, 1]
-    loss_mask_sum = loss_mask_sum.expand_as(loss_mask)      # Broadcast to full shape
+    loss_mask_sum = loss_mask.sum(dim=(0, 2), keepdim=True).expand_as(loss_mask)
 
     return loss_mask, loss_mask_sum
 

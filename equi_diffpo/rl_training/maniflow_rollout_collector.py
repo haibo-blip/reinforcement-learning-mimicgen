@@ -23,7 +23,7 @@ class ManiFlowRolloutStep:
     # Environment data
     observations: Dict[str, np.ndarray]
     actions: np.ndarray  # [action_chunk, action_dim] - sent to env
-    rewards: np.ndarray  # [action_chunk] - per action chunk
+    rewards: np.ndarray  # [1] - chunk-level reward
     dones: np.ndarray    # [1] - episode termination
     truncations: np.ndarray  # [1] - episode truncation
 
@@ -192,7 +192,7 @@ class ManiFlowRolloutCollector:
         # Extract step-by-step data (already in correct format from RobomimicRLRunner)
         observations = rl_data['observations']        # Dict[str, np.ndarray] [n_steps, batch_size, ...]
         actions = rl_data['actions']                  # [n_steps, batch_size, action_chunk, action_dim]
-        rewards = rl_data['rewards']                  # [n_steps, batch_size, action_chunk]
+        rewards = rl_data['rewards']                  # [n_steps, batch_size, 1] - chunk-level reward
         dones = rl_data['dones']                      # [n_steps, batch_size, 1]
         prev_logprobs = rl_data['prev_logprobs']      # [n_steps, batch_size, action_chunk, action_dim]
         prev_values = rl_data['prev_values']          # [n_steps, batch_size, 1]
@@ -419,8 +419,8 @@ class ManiFlowDummyEnvRunner:
         # Generate dummy actions [n_steps, batch_size, action_chunk, action_dim]
         actions = np.random.randn(n_steps, batch_size, self.action_chunk, self.action_dim).astype(np.float32)
 
-        # Generate dummy rewards [n_steps, batch_size, action_chunk]
-        rewards = np.random.randn(n_steps, batch_size, self.action_chunk).astype(np.float32)
+        # Generate dummy rewards [n_steps, batch_size, 1] - chunk-level reward
+        rewards = np.random.randn(n_steps, batch_size, 1).astype(np.float32)
         rewards = rewards * 0.1 + 0.1  # Make rewards slightly positive
 
         # Generate done flags [n_steps, batch_size, 1]
