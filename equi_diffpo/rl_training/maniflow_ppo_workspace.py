@@ -172,8 +172,6 @@ class ManiFlowPPOTrainer:
         while self.global_step < self.config.total_timesteps:
 
             rollout_start_time = time.time()
-            if self.rollout_count % self.config.eval_interval == 0:
-                self._run_evaluation()
             # Stage 1: Collect rollouts
             print(f"\n📊 Rollout {self.rollout_count + 1} (Step {self.global_step:,}/{self.config.total_timesteps:,})")
             rollout_batch = self.rollout_collector.collect_rollouts(
@@ -194,7 +192,8 @@ class ManiFlowPPOTrainer:
             # Metrics and logging
             rollout_time = time.time() - rollout_start_time
             self._log_training_metrics(training_stats, rollout_batch, rollout_time)
-
+            if self.rollout_count % self.config.eval_interval == 0:
+                self._run_evaluation()
             # Save checkpoint
             if self.rollout_count % self.config.save_interval == 0:
                 self._save_checkpoint()
@@ -342,8 +341,8 @@ class ManiFlowPPOTrainer:
         old_logprobs = old_logprobs.mean(dim=1)
         new_logprobs=new_logprobs.mean(dim=1)
         # Sum over action_dim to get joint log probability
-        old_logprobs_flat = old_logprobs.sum(dim=-1)  # [batch, action_chunk]
-        new_logprobs_flat = new_logprobs.sum(dim=-1)  # [batch, action_chunk]
+        old_logprobs_flat = old_logprobs.mean(dim=-1)  # [batch, action_chunk]
+        new_logprobs_flat = new_logprobs.mean(dim=-1)  # [batch, action_chunk]
         # Importance sampling ratio
         log_ratio = new_logprobs_flat - old_logprobs_flat
         ratio = torch.exp(log_ratio)
