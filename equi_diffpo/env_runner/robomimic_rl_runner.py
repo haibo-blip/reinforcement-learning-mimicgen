@@ -140,6 +140,8 @@ class RobomimicRLRunner(RobomimicImageRunner):
         episode_prev_values = []
         episode_chains = []
         episode_denoise_inds = []
+        episode_x_means = []
+        episode_x_stds = []
 
         # Start rollout
         obs = env.reset()
@@ -181,6 +183,8 @@ class RobomimicRLRunner(RobomimicImageRunner):
                 prev_values = sample_result['prev_values'].detach().cpu().numpy()
                 chains = sample_result['chains'].detach().cpu().numpy()
                 denoise_inds = sample_result['denoise_inds'].detach().cpu().numpy()
+                x_means = sample_result['x_means'].detach().cpu().numpy()  # [B, N, T, Da]
+                x_stds = sample_result['x_stds'].detach().cpu().numpy()  # [B, N, T, Da]
 
             # Check for nan/inf
             if not np.all(np.isfinite(action)):
@@ -215,6 +219,8 @@ class RobomimicRLRunner(RobomimicImageRunner):
             episode_prev_values.append(prev_values[:n_active_envs])
             episode_chains.append(chains[:n_active_envs])
             episode_denoise_inds.append(denoise_inds[:n_active_envs])
+            episode_x_means.append(x_means[:n_active_envs])
+            episode_x_stds.append(x_stds[:n_active_envs])
 
             past_action = action
             # step_count += 1
@@ -234,6 +240,8 @@ class RobomimicRLRunner(RobomimicImageRunner):
             'prev_values': episode_prev_values,
             'chains': episode_chains,
             'denoise_inds': episode_denoise_inds,
+            'x_means': episode_x_means,
+            'x_stds': episode_x_stds,
             'n_active_envs': n_active_envs,
             'n_steps': step_count,
         }
@@ -291,6 +299,14 @@ class RobomimicRLRunner(RobomimicImageRunner):
         denoise_per_chunk = [np.stack(chunk['denoise_inds'], axis=0) for chunk in chunk_data_list]
         combined_denoise_inds = np.concatenate(denoise_per_chunk, axis=1)
 
+        # X means: [n_steps, n_envs, N, horizon, action_dim]
+        x_means_per_chunk = [np.stack(chunk['x_means'], axis=0) for chunk in chunk_data_list]
+        combined_x_means = np.concatenate(x_means_per_chunk, axis=1)
+
+        # X stds: [n_steps, n_envs, N, horizon, action_dim]
+        x_stds_per_chunk = [np.stack(chunk['x_stds'], axis=0) for chunk in chunk_data_list]
+        combined_x_stds = np.concatenate(x_stds_per_chunk, axis=1)
+
         # Observations: Dict[str, [n_steps, n_envs, ...]]
         combined_observations = {}
         obs_keys = chunk_data_list[0]['observations'][0].keys()
@@ -316,6 +332,8 @@ class RobomimicRLRunner(RobomimicImageRunner):
             'prev_values': combined_prev_values,
             'chains': combined_chains,
             'denoise_inds': combined_denoise_inds,
+            'x_means': combined_x_means,
+            'x_stds': combined_x_stds,
             'total_steps': total_steps,
             'total_envs': total_envs,
         }
@@ -325,6 +343,8 @@ class RobomimicRLRunner(RobomimicImageRunner):
         print(f"  - rewards: {combined_rewards.shape}")
         print(f"  - dones: {combined_dones.shape}")
         print(f"  - chains: {combined_chains.shape}")
+        print(f"  - x_means: {combined_x_means.shape}")
+        print(f"  - x_stds: {combined_x_stds.shape}")
 
         return combined_data
 

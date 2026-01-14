@@ -537,6 +537,8 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         x_t = x0.clone()  # Start with initial noise
         chains = []
         log_probs = []
+        step_x_means = []
+        step_x_stds = []
 
         # Record initial state (like Pi0.5)
         chains.append(x_t)
@@ -564,6 +566,8 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             # Store results (like Pi0.5)
             chains.append(x_t)
             log_probs.append(log_prob)
+            step_x_means.append(x_t_mean)
+            step_x_stds.append(x_t_std)
 
         # Final trajectory
         x_0 = x_t
@@ -574,12 +578,16 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         if return_chains:
             chains = torch.stack(chains, dim=1)  # [B, N+1, T, Da]
             log_probs = torch.stack(log_probs, dim=1)  # [B, N, ...]
+            x_means = torch.stack(step_x_means, dim=1)  # [B, N, T, Da]
+            x_stds = torch.stack(step_x_stds, dim=1)  # [B, N, T, Da]
 
             result.update({
                 'chains': chains,
                 'prev_logprobs': log_probs,
                 'prev_values': value.unsqueeze(-1),  # [B, 1] - single value per sample
                 'denoise_inds': denoise_inds,
+                'x_means': x_means,
+                'x_stds': x_stds,
             })
 
         return result
@@ -902,6 +910,8 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
                 'prev_logprobs': sample_result['prev_logprobs'],
                 'prev_values': sample_result['prev_values'],
                 'denoise_inds': sample_result['denoise_inds'],
+                'x_means': sample_result['x_means'],
+                'x_stds': sample_result['x_stds'],
             })
 
         return result
@@ -949,6 +959,8 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             'prev_logprobs': result['prev_logprobs'],
             'prev_values': result['prev_values'],
             'denoise_inds': result['denoise_inds'],
+            'x_means': result['x_means'],
+            'x_stds': result['x_stds'],
         }
 
     def default_forward(self,
