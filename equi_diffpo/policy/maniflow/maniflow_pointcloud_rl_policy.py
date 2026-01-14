@@ -1004,7 +1004,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         ]
 
         # Average over denoise steps and dimensions (like OpenPI)
-        log_probs = log_probs.mean(dim=1)  # Average over denoise steps [B, action_chunk, action_dim]
+        # log_probs = log_probs.mean(dim=1)  # Average over denoise steps [B, action_chunk, action_dim]
         entropy = entropy.mean(dim=[1, 2, 3], keepdim=False)[:, None]  # [B, 1] to align with loss mask
         # value_t is already [B] - no need to average over denoising steps anymore
 

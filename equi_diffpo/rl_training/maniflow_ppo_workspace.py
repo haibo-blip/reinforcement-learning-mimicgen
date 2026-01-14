@@ -342,12 +342,12 @@ class ManiFlowPPOTrainer:
         entropy = policy_outputs['entropy']          # [batch, 1]
         # Average old_logprobs over N (denoising steps) to match new_logprobs shape
         # old_logprobs: [batch, N, action_chunk, action_dim] -> [batch, action_chunk, action_dim]
+        import ipdb;ipdb.set_trace()
         old_logprobs = old_logprobs.mean(dim=1)
-
+        new_logprobs=new_logprobs.mean(dim=1)
         # Sum over action_dim to get joint log probability
         old_logprobs_flat = old_logprobs.sum(dim=-1)  # [batch, action_chunk]
         new_logprobs_flat = new_logprobs.sum(dim=-1)  # [batch, action_chunk]
-        import ipdb;ipdb.set_trace()
         # Importance sampling ratio
         log_ratio = new_logprobs_flat - old_logprobs_flat
         ratio = torch.exp(log_ratio)
