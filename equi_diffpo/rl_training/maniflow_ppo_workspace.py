@@ -463,10 +463,11 @@ class ManiFlowPPOTrainer:
         current_lr = self.optimizer.param_groups[0]['lr']
         self.training_metrics['learning_rate'].append(current_lr)
 
+        # Calculate FPS (needed for both console and wandb logging)
+        fps = (self.config.num_envs * self.config.num_steps_per_rollout) / rollout_time
+
         # Console logging
         if self.rollout_count % self.config.log_interval == 0:
-            fps = (self.config.num_envs * self.config.num_steps_per_rollout) / rollout_time
-
             print(f"📊 Metrics (Rollout {self.rollout_count}):")
             print(f"  - Mean reward: {mean_reward:.3f}")
             print(f"  - Total reward: {total_reward:.1f}")
