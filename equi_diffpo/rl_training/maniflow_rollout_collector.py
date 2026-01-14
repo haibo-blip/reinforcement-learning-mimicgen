@@ -54,6 +54,10 @@ class ManiFlowRolloutBatch:
     chains: np.ndarray
     denoise_inds: np.ndarray
 
+    # Denoising step-wise mean and std [n_chunk_steps, batch_size, N, horizon, action_dim]
+    x_means: Optional[np.ndarray] = None
+    x_stds: Optional[np.ndarray] = None
+
     # Loss masking [n_chunk_steps, batch_size, action_chunk] - optional fields with defaults
     loss_mask: Optional[np.ndarray] = None
     loss_mask_sum: Optional[np.ndarray] = None
@@ -194,6 +198,8 @@ class ManiFlowRolloutCollector:
         prev_values = rl_data['prev_values']          # [n_steps, batch_size, 1]
         chains = rl_data['chains']                    # [n_steps, batch_size, N+1, horizon, action_dim]
         denoise_inds = rl_data['denoise_inds']        # [n_steps, batch_size, N]
+        x_means = rl_data['x_means']                  # [n_steps, batch_size, N, horizon, action_dim]
+        x_stds = rl_data['x_stds']                    # [n_steps, batch_size, N, horizon, action_dim]
 
         n_steps = rl_data['total_steps']
         batch_size = rl_data['total_envs']
@@ -204,6 +210,8 @@ class ManiFlowRolloutCollector:
         print(f"  - Actions shape: {actions.shape}")
         print(f"  - Chains shape: {chains.shape}")
         print(f"  - Denoise inds shape: {denoise_inds.shape}")
+        print(f"  - x_means shape: {x_means.shape}")
+        print(f"  - x_stds shape: {x_stds.shape}")
 
         # Create truncations (not tracked by default)
         truncations = np.zeros_like(dones)
@@ -243,6 +251,8 @@ class ManiFlowRolloutCollector:
             'prev_values': (n_steps, batch_size, 1),
             'chains': (n_steps, batch_size, chains.shape[2], chains.shape[3], chains.shape[4]),
             'denoise_inds': (n_steps, batch_size, denoise_inds.shape[2]),
+            'x_means': (n_steps, batch_size, x_means.shape[2], x_means.shape[3], x_means.shape[4]),
+            'x_stds': (n_steps, batch_size, x_stds.shape[2], x_stds.shape[3], x_stds.shape[4]),
         }
 
         for key, expected_shape in expected_shapes.items():
@@ -261,7 +271,9 @@ class ManiFlowRolloutCollector:
             loss_mask=loss_mask_np,
             loss_mask_sum=loss_mask_sum_np,
             chains=chains,
-            denoise_inds=denoise_inds
+            denoise_inds=denoise_inds,
+            x_means=x_means,
+            x_stds=x_stds,
         )
 
     def collect_rollouts(self, num_episodes: Optional[int] = None, num_envs: Optional[int] = None) -> ManiFlowRolloutBatch:
@@ -423,6 +435,8 @@ class ManiFlowDummyEnvRunner:
         prev_values = np.random.randn(n_steps, batch_size, 1).astype(np.float32)
         chains = np.random.randn(n_steps, batch_size, N + 1, self.horizon, self.action_dim).astype(np.float32)
         denoise_inds = np.tile(np.arange(N), (n_steps, batch_size, 1)).astype(np.int64)
+        x_means = np.random.randn(n_steps, batch_size, N, self.horizon, self.action_dim).astype(np.float32)
+        x_stds = np.abs(np.random.randn(n_steps, batch_size, N, self.horizon, self.action_dim).astype(np.float32)) * 0.1
 
         rl_data = {
             'observations': observations,
@@ -433,6 +447,8 @@ class ManiFlowDummyEnvRunner:
             'prev_values': prev_values,
             'chains': chains,
             'denoise_inds': denoise_inds,
+            'x_means': x_means,
+            'x_stds': x_stds,
             'total_steps': n_steps,
             'total_envs': batch_size,
         }
@@ -441,6 +457,8 @@ class ManiFlowDummyEnvRunner:
         print(f"  - actions shape: {actions.shape}")
         print(f"  - rewards shape: {rewards.shape}")
         print(f"  - chains shape: {chains.shape}")
+        print(f"  - x_means shape: {x_means.shape}")
+        print(f"  - x_stds shape: {x_stds.shape}")
 
         return {
             'rl_data': rl_data,
