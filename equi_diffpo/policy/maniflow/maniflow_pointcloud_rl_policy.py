@@ -295,7 +295,6 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         """
         if self.value_head is None:
             return torch.zeros(vis_cond.shape[0], device=vis_cond.device)
-        import imdp; imdp.set_trace()
         # Pool observation features across sequence dimension for value estimation
         obs_features_pooled = vis_cond.mean(dim=1)  # [B, obs_feature_dim]
         return self.value_head(obs_features_pooled).squeeze(-1)  # [B]
