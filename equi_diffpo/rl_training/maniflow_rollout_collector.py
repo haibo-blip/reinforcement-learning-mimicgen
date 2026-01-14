@@ -82,7 +82,7 @@ class ManiFlowRolloutBatch:
 
         # Convert other arrays
         for field_name in ['actions', 'rewards', 'dones', 'prev_logprobs', 'prev_values',
-                          'chains', 'denoise_inds', 'loss_mask', 'loss_mask_sum']:
+                          'chains', 'denoise_inds', 'loss_mask', 'loss_mask_sum','x_stds','x_means']:
             if hasattr(self, field_name) and getattr(self, field_name) is not None:
                 result[field_name] = torch.from_numpy(getattr(self, field_name)).to(device)
 
