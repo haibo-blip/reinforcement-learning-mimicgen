@@ -151,7 +151,7 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
         entropy_coef=ppo_trainer_config.get('entropy_coef', 0.01),
         value_coef=ppo_trainer_config.get('value_loss_coef', 0.5),
         max_grad_norm=ppo_trainer_config.get('max_grad_norm', 0.5),
-        target_kl=0.01,
+        target_kl=0.03,
         wandb_project=cfg.get('logging', {}).get('project', 'maniflow_rl'),
         wandb_run_name=cfg.get('logging', {}).get('name', 'ppo_training'),
         # Pass max_episode_length from config to avoid duplicate collector with wrong value

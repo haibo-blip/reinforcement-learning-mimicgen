@@ -54,7 +54,7 @@ class PPOConfig:
     # Logging
     log_interval: int = 10            # Log every N rollouts
     save_interval: int = 100          # Save every N rollouts
-    eval_interval: int = 50           # Eval every N rollouts
+    eval_interval: int = 3           # Eval every N rollouts
     wandb_project: str = "maniflow_rl"
     wandb_run_name: str = "ppo_training"
 
@@ -342,7 +342,6 @@ class ManiFlowPPOTrainer:
         entropy = policy_outputs['entropy']          # [batch, 1]
         # Average old_logprobs over N (denoising steps) to match new_logprobs shape
         # old_logprobs: [batch, N, action_chunk, action_dim] -> [batch, action_chunk, action_dim]
-        import ipdb;ipdb.set_trace()
         old_logprobs = old_logprobs.mean(dim=1)
         new_logprobs=new_logprobs.mean(dim=1)
         # Sum over action_dim to get joint log probability
