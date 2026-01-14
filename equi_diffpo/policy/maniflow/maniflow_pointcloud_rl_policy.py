@@ -465,15 +465,15 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
                 timesteps = torch.linspace(1, 0, self.num_inference_steps + 1, device=device)
                 sigmas = (
                     current_noise_level
-                    * timesteps[:-1]
-                    / (1 - torch.where(timesteps[:-1] == 1, timesteps[1], timesteps[:-1]))
+                    * torch.sqrt(t_tensor
+                    / (1 - torch.where(t_tensor == 1, timesteps[1], t_tensor)))
                 )
 
-                # Get current step index (approximate) - use mean t for batch
-                step_idx = int(t_scalar * self.num_inference_steps)
-                step_idx = max(0, min(step_idx, len(sigmas) - 1))
-                sigma_i = sigmas[step_idx]
-                sigma_i = sigma_i.expand_as(t_input)
+                # # Get current step index (approximate) - use mean t for batch
+                # step_idx = int(t_scalar * self.num_inference_steps)
+                # step_idx = max(0, min(step_idx, len(sigmas) - 1))
+                # sigma_i = sigmas[step_idx]
+                sigma_i = sigmas[:, None, None].expand_as(t_input)
 
                 x0_weight = torch.ones_like(t_input) - (t_input - delta)
                 x1_weight = t_input - delta - sigma_i**2 * delta / (2 * t_input)
