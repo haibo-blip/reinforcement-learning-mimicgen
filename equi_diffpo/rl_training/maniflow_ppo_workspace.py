@@ -441,7 +441,7 @@ class ManiFlowPPOTrainer:
         flat_data['observation'] = obs_dict
 
         # Flatten other tensors
-        for key in ['chains', 'denoise_inds', 'prev_logprobs', 'advantages', 'returns', 'loss_mask']:
+        for key in ['chains', 'denoise_inds', 'prev_logprobs', 'advantages', 'returns', 'loss_mask','x_stds','x_means']:
             if key in torch_batch and torch_batch[key] is not None:
                 flat_data[key] = torch_batch[key].flatten(0, 1)
 
