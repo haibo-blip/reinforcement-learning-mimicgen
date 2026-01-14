@@ -744,7 +744,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             x_t_mean, x_t_std = self.get_step_prediction_for_logprob(
                 chains_pre, denoise_ind, vis_cond, lang_cond
             )
-            import ipdb;ipdb.set_trace()
+            # import ipdb;ipdb.set_trace()
             # Compute log probability and entropy
             log_probs = self.get_logprob_norm(chains_next, x_t_mean, x_t_std)
             entropy = self.gaussian_entropy(x_t_std)
