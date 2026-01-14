@@ -170,7 +170,8 @@ class ManiFlowPPOTrainer:
         steps_per_rollout = self.config.num_envs * self.config.num_steps_per_rollout
 
         while self.global_step < self.config.total_timesteps:
-
+            if self.rollout_count % self.config.eval_interval == 0:
+                self._run_evaluation()
             rollout_start_time = time.time()
             # Stage 1: Collect rollouts
             print(f"\n📊 Rollout {self.rollout_count + 1} (Step {self.global_step:,}/{self.config.total_timesteps:,})")
@@ -192,8 +193,6 @@ class ManiFlowPPOTrainer:
             # Metrics and logging
             rollout_time = time.time() - rollout_start_time
             self._log_training_metrics(training_stats, rollout_batch, rollout_time)
-            if self.rollout_count % self.config.eval_interval == 0:
-                self._run_evaluation()
             # Save checkpoint
             if self.rollout_count % self.config.save_interval == 0:
                 self._save_checkpoint()
