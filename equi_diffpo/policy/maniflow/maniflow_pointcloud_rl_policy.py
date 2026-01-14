@@ -17,6 +17,7 @@ from einops import reduce
 from termcolor import cprint
 
 from equi_diffpo.model.common.normalizer import LinearNormalizer
+from equi_diffpo.model.common.value_head import ValueHead
 from equi_diffpo.policy.base_image_policy import BaseImagePolicy
 from equi_diffpo.common.pytorch_util import dict_apply
 from equi_diffpo.common.model_util import print_params
@@ -75,39 +76,6 @@ class ExploreNoiseNet(nn.Module):
         return log_std
 
 
-class ValueHead(nn.Module):
-    """Value estimation head for RL training."""
-
-    def __init__(self,
-                 input_dim: int,
-                 hidden_sizes: tuple = (512, 256, 128),
-                 output_dim: int = 1,
-                 activation: str = "relu",
-                 bias_last: bool = True):
-        super().__init__()
-
-        layers = []
-        prev_dim = input_dim
-        for hidden_size in hidden_sizes:
-            layers.extend([
-                nn.Linear(prev_dim, hidden_size),
-                nn.ReLU() if activation == "relu" else nn.Tanh()
-            ])
-            prev_dim = hidden_size
-
-        layers.append(nn.Linear(prev_dim, output_dim, bias=bias_last))
-        self.mlp = nn.Sequential(*layers)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: Input features [B, input_dim]
-        Returns:
-            values: State values [B, 1]
-        """
-        return self.mlp(x)
-
-
 class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
     """
     ManiFlow RL Policy for pointcloud observations.
@@ -159,6 +127,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
                  value_hidden_sizes: tuple = (512, 256, 128),
                  safe_get_logprob: bool = False,
                  joint_logprob: bool = False,  # like Pi0.5
+                 freeze_encoder: bool = True,  # Freeze visual encoder during RL training
                  # Flow training parameters (kept for compatibility)
                  flow_batch_ratio: float = 0.75,
                  consistency_batch_ratio: float = 0.25,
@@ -236,6 +205,10 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         self.obs_encoder = obs_encoder
         self.model = model
 
+        # Freeze visual encoder if requested
+        if freeze_encoder:
+            self.freeze_visual_encoder()
+
         # RL-specific components
         if noise_method == "flow_noise":
             # Learnable noise head
@@ -301,6 +274,12 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         """Set global step for noise annealing."""
         self.global_step = global_step
 
+    def freeze_visual_encoder(self):
+        """Freeze visual encoder parameters for RL training."""
+        for param in self.obs_encoder.parameters():
+            param.requires_grad = False
+        cprint("[ManiFlowRLPointcloudPolicy] Visual encoder frozen", "cyan")
+
     def compute_value(self, vis_cond: torch.Tensor) -> torch.Tensor:
         """
         Compute state value from observation features (called ONCE per sample).
@@ -316,18 +295,10 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         """
         if self.value_head is None:
             return torch.zeros(vis_cond.shape[0], device=vis_cond.device)
-
+        import imdp; imdp.set_trace()
         # Pool observation features across sequence dimension for value estimation
         obs_features_pooled = vis_cond.mean(dim=1)  # [B, obs_feature_dim]
         return self.value_head(obs_features_pooled).squeeze(-1)  # [B]
-
-    def train(self, mode: bool = True):
-        """Set training mode (adds noise like Pi0.5)."""
-        self._training_mode = True
-
-    def eval(self):
-        """Set evaluation mode (deterministic, no noise like Pi0.5)."""
-        self._training_mode = False
 
     def get_current_noise_level(self) -> float:
         """Get current noise level (with annealing if enabled)."""
@@ -940,11 +911,8 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         else:
             obs_dict = observation
 
-        # Set mode
-        if mode == "train":
-            self.train()
-        else:
-            self.eval()
+        # Set noise mode directly (don't touch PyTorch module state)
+        self._training_mode = (mode == "train")
 
         # Get result with chains
         result = self.predict_action(obs_dict, return_chains=True)
@@ -979,7 +947,8 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             Dictionary with 'logprobs', 'values', 'entropy'
         """
         # Extract arguments (like OpenPI)
-        self.train()
+        # Set noise mode for training (recomputing logprobs needs train mode)
+        self._training_mode = True
         compute_values = kwargs.get("compute_values", False)
         chains = data["chains"]  # [B, N+1, horizon, action_dim]
         denoise_inds = data["denoise_inds"]  # [B, N]
