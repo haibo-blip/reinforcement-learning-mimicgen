@@ -736,7 +736,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             x_t_mean, x_t_std = self.get_step_prediction_for_logprob(
                 chains_pre, denoise_ind, vis_cond, lang_cond
             )
-
+            import ipdb;ipdb.set_trace()
             # Compute log probability and entropy
             log_probs = self.get_logprob_norm(chains_next, x_t_mean, x_t_std)
             entropy = self.gaussian_entropy(x_t_std)
@@ -869,21 +869,13 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         cond_data = torch.zeros(size=(B, T, Da), device=self.device, dtype=self.dtype)
 
         # Sample actions (with optional chains like Pi0.5)
-        if return_chains:
-            sample_result = self.conditional_sample(
-                cond_data,
-                vis_cond=vis_cond,
-                lang_cond=lang_cond,
-                return_chains=True
-            )
-            nsample = sample_result['actions']
-        else:
-            nsample = self.conditional_sample(
-                cond_data,
-                vis_cond=vis_cond,
-                lang_cond=lang_cond,
-                return_chains=False
-            )
+        sample_result = self.conditional_sample(
+            cond_data,
+            vis_cond=vis_cond,
+            lang_cond=lang_cond,
+            return_chains=True
+        )
+        nsample = sample_result['actions']
 
         # Unnormalize prediction
         naction_pred = nsample[...,:Da]
