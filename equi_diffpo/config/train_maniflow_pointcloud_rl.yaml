@@ -56,7 +56,7 @@ policy:
   sample_target_t_mode: "relative"
   diffusion_timestep_embed_dim: 128
   diffusion_target_t_embed_dim: 128
-
+  noise_level: 0.1
   # Point cloud encoder parameters
   encoder_type: "DP3Encoder"
   crop_shape: null
@@ -105,8 +105,6 @@ rl_training:
     critic_lr: 1.0e-4
 
     # Flow SDE parameters (following RLinf pi0.5 approach)
-    noise_level: 0.1  # Fixed noise level for flow SDE
-    num_inference_steps: 10  # Number of denoising steps
 
 # Training configuration
 training:
