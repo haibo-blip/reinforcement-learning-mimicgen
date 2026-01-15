@@ -41,6 +41,9 @@ class PPOConfig:
     value_coef: float = 0.5           # Value loss coefficient
     target_kl: float = 0.01           # Target KL divergence for early stopping
 
+    # Critic warmup
+    critic_warmup_rollouts: int = 0   # Number of rollouts to warmup critic before training actor
+
     # Learning rates
     learning_rate: float = 3e-4       # Adam learning rate
     lr_schedule: str = "linear"       # linear, constant, cosine
@@ -165,6 +168,8 @@ class ManiFlowPPOTrainer:
     def train(self) -> None:
         """Main training loop following RLinf pattern."""
         print(f"🎯 Starting PPO training for {self.config.total_timesteps:,} timesteps")
+        if self.config.critic_warmup_rollouts > 0:
+            print(f"🔥 Critic warmup: {self.config.critic_warmup_rollouts} rollouts before training actor")
 
         start_time = time.time()
         steps_per_rollout = self.config.num_envs * self.config.num_steps_per_rollout
@@ -183,8 +188,9 @@ class ManiFlowPPOTrainer:
             # Stage 2: Calculate advantages and returns
             rollout_batch = self.advantage_calculator.calculate_advantages_and_returns(rollout_batch)
 
-            # Stage 3: PPO training
-            training_stats = self.run_ppo_training(rollout_batch)
+            # Stage 3: PPO training (critic-only during warmup phase)
+            critic_only = self.rollout_count < self.config.critic_warmup_rollouts
+            training_stats = self.run_ppo_training(rollout_batch, critic_only=critic_only)
 
             # Update global step
             self.global_step += steps_per_rollout
@@ -205,17 +211,21 @@ class ManiFlowPPOTrainer:
         if self.use_wandb:
             wandb.finish()
 
-    def run_ppo_training(self, rollout_batch: ManiFlowRolloutBatch) -> Dict[str, float]:
+    def run_ppo_training(self, rollout_batch: ManiFlowRolloutBatch, critic_only: bool = False) -> Dict[str, float]:
         """
         Run PPO training on rollout batch following RLinf pattern.
 
         Args:
             rollout_batch: Collected rollout data with advantages and returns
+            critic_only: If True, only train critic (value head), skip actor updates
 
-        Returns:run_ppo_training
+        Returns:
             Training statistics
         """
-        print("🔥 Running PPO training...")
+        if critic_only:
+            print("🔥 Running critic warmup (value head only)...")
+        else:
+            print("🔥 Running PPO training...")
 
         # Convert to torch
         torch_batch = rollout_batch.to_torch(self.device)
@@ -273,7 +283,7 @@ class ManiFlowPPOTrainer:
                 )
 
                 # Compute losses
-                loss_dict = self._compute_ppo_loss(mini_batch, policy_outputs)
+                loss_dict = self._compute_ppo_loss(mini_batch, policy_outputs, critic_only=critic_only)
 
                 # Backward pass
                 self.optimizer.zero_grad()
@@ -323,8 +333,15 @@ class ManiFlowPPOTrainer:
 
     def _compute_ppo_loss(self,
                          mini_batch: Dict[str, torch.Tensor],
-                         policy_outputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        """Compute PPO loss following RLinf pattern with loss masking support."""
+                         policy_outputs: Dict[str, torch.Tensor],
+                         critic_only: bool = False) -> Dict[str, torch.Tensor]:
+        """Compute PPO loss following RLinf pattern with loss masking support.
+
+        Args:
+            mini_batch: Mini-batch of training data
+            policy_outputs: Policy forward outputs
+            critic_only: If True, only compute value loss (for critic warmup)
+        """
 
         # Extract data
         old_logprobs = mini_batch['prev_logprobs']  # [batch, N, action_chunk, action_dim]
@@ -335,10 +352,36 @@ class ManiFlowPPOTrainer:
         new_logprobs = policy_outputs['logprobs']    # [batch, action_chunk, action_dim]
         values = policy_outputs['values']            # [batch]
         entropy = policy_outputs['entropy']          # [batch, 1]
+
+        # Value loss (always computed)
+        values_expanded = values.unsqueeze(1)  # [batch, 1]
+        value_loss_unmasked = (values_expanded - returns) ** 2
+
+        # Apply loss mask for value loss (only for return dimension)
+        if loss_mask is not None:
+            # For value loss, we typically mask based on the first action chunk
+            value_mask = loss_mask[:, 0:1].bool()  # [batch, 1]
+            value_loss = masked_mean(value_loss_unmasked, value_mask)
+        else:
+            value_loss = value_loss_unmasked.mean()
+
+        # If critic_only mode, skip policy loss computation
+        if critic_only:
+            total_loss = self.config.value_coef * value_loss
+            return {
+                'policy_loss': torch.tensor(0.0, device=values.device),
+                'value_loss': value_loss,
+                'entropy_loss': torch.tensor(0.0, device=values.device),
+                'total_loss': total_loss,
+                'kl_divergence': torch.tensor(0.0, device=values.device),
+                'clip_fraction': torch.tensor(0.0, device=values.device),
+                'explained_variance': torch.tensor(0.0, device=values.device),
+            }
+
         # Average old_logprobs over N (denoising steps) to match new_logprobs shape
         # old_logprobs: [batch, N, action_chunk, action_dim] -> [batch, action_chunk, action_dim]
         old_logprobs = old_logprobs.mean(dim=1)
-        new_logprobs=new_logprobs.mean(dim=1)
+        new_logprobs = new_logprobs.mean(dim=1)
         # Sum over action_dim to get joint log probability
         old_logprobs_flat = old_logprobs.mean(dim=-1)  # [batch, action_chunk]
         new_logprobs_flat = new_logprobs.mean(dim=-1)  # [batch, action_chunk]
@@ -357,18 +400,6 @@ class ManiFlowPPOTrainer:
             policy_loss = masked_mean(policy_loss_unmasked, loss_mask.bool())
         else:
             policy_loss = policy_loss_unmasked.mean()
-
-        # Value loss
-        values_expanded = values.unsqueeze(1)  # [batch, 1]
-        value_loss_unmasked = (values_expanded - returns) ** 2
-
-        # Apply loss mask for value loss (only for return dimension)
-        if loss_mask is not None:
-            # For value loss, we typically mask based on the first action chunk
-            value_mask = loss_mask[:, 0:1].bool()  # [batch, 1]
-            value_loss = masked_mean(value_loss_unmasked, value_mask)
-        else:
-            value_loss = value_loss_unmasked.mean()
 
         # Entropy loss (encourage exploration)
         entropy_unmasked = entropy

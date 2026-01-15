@@ -389,6 +389,7 @@ class RobomimicRLRunner(RobomimicImageRunner):
 
         # Reward statistics
         rewards = rl_data['rewards']
+        log_data['rl_total_reward'] = float(np.sum(rewards))
         log_data['rl_mean_step_reward'] = float(np.mean(rewards))
         log_data['rl_std_step_reward'] = float(np.std(rewards))
         log_data['rl_min_step_reward'] = float(np.min(rewards))
@@ -417,6 +418,7 @@ class RobomimicRLRunner(RobomimicImageRunner):
         print(f"📊 RL Metrics:")
         print(f"  - Total steps: {log_data['rl_total_steps']}")
         print(f"  - Episodes: {log_data['rl_num_episodes']}")
+        print(f"  - Total reward: {log_data['rl_total_reward']:.4f}")
         print(f"  - Mean reward: {log_data['rl_mean_step_reward']:.4f}")
         print(f"  - Mean value: {log_data['rl_mean_value_estimate']:.4f}")
 

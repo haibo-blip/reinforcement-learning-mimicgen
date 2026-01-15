@@ -832,7 +832,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         """
         # Encode observations
         vis_cond = self.encode_observations(obs_dict)
-
+        import ipdb; ipdb.set_trace()
         value = next(iter(obs_dict.values()))
         B = value.shape[0]
         T = self.horizon
