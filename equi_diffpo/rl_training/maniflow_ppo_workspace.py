@@ -165,6 +165,56 @@ class ManiFlowPPOTrainer:
         print(f"  - Device: {self.device}")
         print(f"  - Parameters: {sum(p.numel() for p in self.policy.parameters()):,}")
 
+        # 🔍 检查 visual encoder 是否被冻结
+        self._check_visual_encoder_frozen()
+
+    def _check_visual_encoder_frozen(self):
+        """检查 visual encoder 的冻结状态"""
+        print(f"\n🔍 Visual Encoder 冻结状态检查:")
+
+        if hasattr(self.policy, 'obs_encoder'):
+            encoder = self.policy.obs_encoder
+            total_params = 0
+            frozen_params = 0
+            trainable_params = 0
+
+            for name, param in encoder.named_parameters():
+                total_params += param.numel()
+                if param.requires_grad:
+                    trainable_params += param.numel()
+                else:
+                    frozen_params += param.numel()
+
+            frozen_ratio = frozen_params / total_params if total_params > 0 else 0
+
+            print(f"  - Total encoder params: {total_params:,}")
+            print(f"  - Frozen params: {frozen_params:,} ({frozen_ratio:.1%})")
+            print(f"  - Trainable params: {trainable_params:,} ({1-frozen_ratio:.1%})")
+
+            if frozen_ratio > 0.99:
+                print(f"  ✅ Visual encoder 已冻结")
+            elif frozen_ratio < 0.01:
+                print(f"  ⚠️ Visual encoder 未冻结 (全部可训练)")
+            else:
+                print(f"  ⚠️ Visual encoder 部分冻结")
+                # 打印前几个可训练的参数
+                print(f"  可训练参数示例:")
+                count = 0
+                for name, param in encoder.named_parameters():
+                    if param.requires_grad and count < 5:
+                        print(f"    - {name}: {param.shape}")
+                        count += 1
+        else:
+            print(f"  ⚠️ 未找到 obs_encoder")
+
+        # 检查整体模型的参数分布
+        print(f"\n🔍 整体模型参数分布:")
+        total_all = sum(p.numel() for p in self.policy.parameters())
+        trainable_all = sum(p.numel() for p in self.policy.parameters() if p.requires_grad)
+        print(f"  - Total: {total_all:,}")
+        print(f"  - Trainable: {trainable_all:,} ({trainable_all/total_all:.1%})")
+        print(f"  - Frozen: {total_all - trainable_all:,} ({(total_all-trainable_all)/total_all:.1%})")
+
     def train(self) -> None:
         """Main training loop following RLinf pattern."""
         print(f"🎯 Starting PPO training for {self.config.total_timesteps:,} timesteps")
@@ -213,7 +263,9 @@ class ManiFlowPPOTrainer:
 
     def run_ppo_training(self, rollout_batch: ManiFlowRolloutBatch, critic_only: bool = False) -> Dict[str, float]:
         """
-        Run PPO training on rollout batch following RLinf pattern.
+        Run PPO training on rollout batch following Pi0.5/RLinf pattern.
+
+        Pi0.5 style: 1 epoch per rollout, no early stopping.
 
         Args:
             rollout_batch: Collected rollout data with advantages and returns
@@ -225,7 +277,7 @@ class ManiFlowPPOTrainer:
         if critic_only:
             print("🔥 Running critic warmup (value head only)...")
         else:
-            print("🔥 Running PPO training...")
+            print("🔥 Running PPO training (Pi0.5 style: 1 epoch, no early stop)...")
 
         # Convert to torch
         torch_batch = rollout_batch.to_torch(self.device)
@@ -246,69 +298,59 @@ class ManiFlowPPOTrainer:
         }
 
         num_updates = 0
-        early_stop = False
 
         # Following RLinf pattern: Set policy to training mode only for gradient updates
         self.policy.train()
 
-        for epoch in range(self.config.num_epochs):
-            if early_stop:
-                break
+        # Pi0.5 style: only 1 epoch, no early stopping
+        # Shuffle data
+        indices = torch.randperm(total_samples)
 
-            # Shuffle data
-            indices = torch.randperm(total_samples)
+        for start in range(0, total_samples, self.config.batch_size):
+            end = min(start + self.config.batch_size, total_samples)
+            batch_indices = indices[start:end]
 
-            for start in range(0, total_samples, self.config.batch_size):
-                end = min(start + self.config.batch_size, total_samples)
-                batch_indices = indices[start:end]
+            # Extract mini-batch (handle observation dict specially)
+            mini_batch = {}
+            for key, value in flat_data.items():
+                if key == 'observation':
+                    # value is a dict of tensors
+                    mini_batch[key] = {k: v[batch_indices] for k, v in value.items()}
+                else:
+                    mini_batch[key] = value[batch_indices]
 
-                # Extract mini-batch (handle observation dict specially)
-                mini_batch = {}
-                for key, value in flat_data.items():
-                    if key == 'observation':
-                        # value is a dict of tensors
-                        mini_batch[key] = {k: v[batch_indices] for k, v in value.items()}
-                    else:
-                        mini_batch[key] = value[batch_indices]
+            # Forward pass through policy
+            policy_outputs = self.policy.default_forward(
+                data={
+                    'observation': mini_batch['observation'],
+                    'chains': mini_batch['chains'],
+                    'denoise_inds': mini_batch['denoise_inds'],
+                    'prev_logprobs': mini_batch['prev_logprobs']
+                },
+                compute_values=True
+            )
 
-                # Forward pass through policy
-                policy_outputs = self.policy.default_forward(
-                    data={
-                        'observation': mini_batch['observation'],
-                        'chains': mini_batch['chains'],
-                        'denoise_inds': mini_batch['denoise_inds'],
-                        'prev_logprobs':mini_batch['prev_logprobs']
-                    },
-                    compute_values=True
-                )
+            # Compute losses
+            loss_dict = self._compute_ppo_loss(mini_batch, policy_outputs, critic_only=critic_only)
 
-                # Compute losses
-                loss_dict = self._compute_ppo_loss(mini_batch, policy_outputs, critic_only=critic_only)
+            # Backward pass
+            self.optimizer.zero_grad()
+            loss_dict['total_loss'].backward()
 
-                # Backward pass
-                self.optimizer.zero_grad()
-                loss_dict['total_loss'].backward()
+            # Gradient clipping
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.policy.parameters(),
+                self.config.max_grad_norm
+            )
 
-                # Gradient clipping
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    self.policy.parameters(),
-                    self.config.max_grad_norm
-                )
+            self.optimizer.step()
 
-                self.optimizer.step()
+            # Update statistics
+            for key in stats.keys():
+                if key in loss_dict:
+                    stats[key] += loss_dict[key].item()
 
-                # Update statistics
-                for key in stats.keys():
-                    if key in loss_dict:
-                        stats[key] += loss_dict[key].item()
-
-                num_updates += 1
-
-                # Early stopping based on KL divergence
-                if loss_dict['kl_divergence'].item() > 1.5 * self.config.target_kl:
-                    print(f"  Early stopping at epoch {epoch}, KL={loss_dict['kl_divergence'].item():.4f}")
-                    early_stop = True
-                    break
+            num_updates += 1
 
         # Average statistics
         for key in stats.keys():
@@ -324,10 +366,10 @@ class ManiFlowPPOTrainer:
         # Following RLinf pattern: Restore policy to eval mode after training
         self.policy.eval()
 
-        print(f"  ✅ PPO training completed: {num_updates} updates across {epoch + 1} epochs")
+        print(f"  ✅ PPO training completed: {num_updates} updates (1 epoch)")
         print(f"    - Policy loss: {stats['policy_loss']:.6f}")
         print(f"    - Value loss: {stats['value_loss']:.6f}")
-        print(f"    - KL divergence: {stats['kl_divergence']:.6f}")
+        print(f"    - Clip fraction: {stats['clip_fraction']:.2%}")
 
         return stats
 
@@ -382,12 +424,33 @@ class ManiFlowPPOTrainer:
         # old_logprobs: [batch, N, action_chunk, action_dim] -> [batch, action_chunk, action_dim]
         old_logprobs = old_logprobs.mean(dim=1)
         new_logprobs = new_logprobs.mean(dim=1)
-        # Sum over action_dim to get joint log probability
-        old_logprobs_flat = old_logprobs.mean(dim=-1)  # [batch, action_chunk]
-        new_logprobs_flat = new_logprobs.mean(dim=-1)  # [batch, action_chunk]
+        # Sum over action_dim to get joint log probability (following RLinf pattern)
+        old_logprobs_flat = old_logprobs.sum(dim=-1)  # [batch, action_chunk]
+        new_logprobs_flat = new_logprobs.sum(dim=-1)  # [batch, action_chunk]
         # Importance sampling ratio
         log_ratio = new_logprobs_flat - old_logprobs_flat
         ratio = torch.exp(log_ratio)
+
+        # 🔍 诊断 logging: 检查 ratio 和 logprob 变化
+        with torch.no_grad():
+            # 检查正 advantage 样本的 logprob 是否增加
+            positive_adv_mask = advantages > 0  # [batch, action_chunk]
+            if positive_adv_mask.any():
+                # 对于正 advantage（好的动作），新 logprob 应该比旧的大
+                pos_log_ratio = log_ratio[positive_adv_mask]
+                pos_logprob_increased = (pos_log_ratio > 0).float().mean()
+                pos_old_logprob = old_logprobs_flat[positive_adv_mask].mean()
+                pos_new_logprob = new_logprobs_flat[positive_adv_mask].mean()
+                print(f"  🎯 正 Advantage 样本 ({positive_adv_mask.sum().item()} 个):")
+                print(f"     - old_logprob: {pos_old_logprob:.4f}, new_logprob: {pos_new_logprob:.4f}")
+                print(f"     - logprob 增加比例: {pos_logprob_increased:.2%}")
+                print(f"     - 平均 log_ratio: {pos_log_ratio.mean():.4f}")
+
+            # 整体 ratio 统计
+            print(f"  📊 Ratio 统计:")
+            print(f"     - mean: {ratio.mean():.4f}, std: {ratio.std():.4f}")
+            print(f"     - min: {ratio.min():.4f}, max: {ratio.max():.4f}")
+            print(f"     - clip_fraction: {(torch.abs(ratio - 1.0) > self.config.clip_range).float().mean():.2%}")
 
         # Clipped policy loss (PPO objective)
         clipped_ratio = torch.clamp(ratio, 1.0 - self.config.clip_range, 1.0 + self.config.clip_range)
