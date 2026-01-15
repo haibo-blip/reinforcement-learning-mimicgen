@@ -242,6 +242,32 @@ class ManiFlowRolloutCollector:
 
         print(f"📊 Loss mask computed: {loss_mask_np.sum()} / {loss_mask_np.size} valid steps")
 
+        # Debug: verify loss mask for envs with rewards
+        # Find envs that got reward (success)
+        reward_per_env = rewards.sum(axis=(0, 2))  # [batch_size]
+        successful_envs = np.where(reward_per_env > 0)[0]
+
+        if len(successful_envs) > 0:
+            print(f"  🔍 Loss mask verification for {len(successful_envs)} successful env(s):")
+            for env_idx in successful_envs[:3]:  # Show up to 3 examples
+                env_dones = dones[:, env_idx, 0]  # [n_steps]
+                env_rewards = rewards[:, env_idx, 0]  # [n_steps]
+                env_mask = loss_mask_np[:, env_idx, 0]  # [n_steps]
+
+                # Find first done step
+                done_steps = np.where(env_dones > 0)[0]
+                first_done = done_steps[0] if len(done_steps) > 0 else -1
+
+                # Find reward step
+                reward_steps = np.where(env_rewards > 0)[0]
+                reward_step = reward_steps[0] if len(reward_steps) > 0 else -1
+
+                print(f"    Env {env_idx}: reward_step={reward_step}, first_done_step={first_done}")
+                print(f"      dones: {env_dones[:min(10, n_steps)].astype(int).tolist()}{'...' if n_steps > 10 else ''}")
+                print(f"      mask:  {env_mask[:min(10, n_steps)].astype(int).tolist()}{'...' if n_steps > 10 else ''}")
+                print(f"      → mask[reward_step]={int(env_mask[reward_step]) if reward_step >= 0 else 'N/A'}, "
+                      f"mask[reward_step+1]={int(env_mask[reward_step+1]) if reward_step >= 0 and reward_step+1 < n_steps else 'N/A'}")
+
         # Validate shapes
         expected_shapes = {
             'actions': (n_steps, batch_size, actions.shape[2], actions.shape[3]),

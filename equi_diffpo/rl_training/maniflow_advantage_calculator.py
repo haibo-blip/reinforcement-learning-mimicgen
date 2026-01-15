@@ -123,6 +123,9 @@ class ManiFlowAdvantageCalculator:
         # GAE calculation: work backwards through time
         gae = np.zeros((batch_size, 1), dtype=np.float32)
 
+        # Track steps with non-zero rewards for logging
+        reward_steps_info = []
+
         for step in reversed(range(n_steps)):
             # Current step data
             reward = chunk_rewards[step]            # [batch_size, 1] - sum across chunks
@@ -142,6 +145,21 @@ class ManiFlowAdvantageCalculator:
             # Compute returns following RLinf: returns = advantages + values
             returns[step] = gae + current_value
 
+            # Log info for steps with non-zero rewards (before normalization)
+            reward_mask = reward.flatten() > 0
+            if np.any(reward_mask):
+                for env_idx in np.where(reward_mask)[0]:
+                    reward_steps_info.append({
+                        'step': step,
+                        'env': env_idx,
+                        'reward': float(reward[env_idx, 0]),
+                        'advantage_raw': float(gae[env_idx, 0]),
+                        'value': float(current_value[env_idx, 0]),
+                        'next_value': float(next_value[env_idx, 0]),
+                        'done': float(done[env_idx, 0]),
+                        'delta': float(delta[env_idx, 0]),
+                    })
+
         # Normalize advantages if requested
         if self.config.normalize_advantages:
             advantages_flat = advantages.flatten()
@@ -154,6 +172,21 @@ class ManiFlowAdvantageCalculator:
         print(f"  - Returns shape: {returns.shape}")
         print(f"  - Advantage range: [{advantages.min():.3f}, {advantages.max():.3f}]")
         print(f"  - Return range: [{returns.min():.3f}, {returns.max():.3f}]")
+
+        # Log details for steps with rewards
+        if reward_steps_info:
+            print(f"  🎯 Steps with rewards ({len(reward_steps_info)} total):")
+            for info in reward_steps_info:
+                # Get normalized advantage for this step/env
+                adv_normalized = advantages[info['step'], info['env'], 0]
+                print(f"    Step {info['step']:2d}, Env {info['env']}: "
+                      f"r={info['reward']:.2f}, "
+                      f"V(s)={info['value']:.3f}, "
+                      f"V(s')={info['next_value']:.3f}, "
+                      f"done={info['done']:.0f}, "
+                      f"δ={info['delta']:.3f}, "
+                      f"A_raw={info['advantage_raw']:.3f}, "
+                      f"A_norm={adv_normalized:.3f}")
 
         # Update rollout batch
         rollout_batch.advantages = advantages

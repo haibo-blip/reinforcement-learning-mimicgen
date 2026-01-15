@@ -227,9 +227,11 @@ class RobomimicRLRunner(RobomimicImageRunner):
             # Update tracker for next chunk
             prev_cumulative_rewards = cumulative_rewards.copy()
 
-            # Store individual environment done flags (per env tracking)
-            # 不用于控制循环，只用于 loss mask
-            individual_dones = done_array[:n_active_envs].copy()  # [n_active_envs]
+            # Generate done signal: success (cumulative_rewards >= 1) OR truncation (original done)
+            # 一旦 cumulative_rewards 变成 1，说明任务成功，应该视为 done
+            success_done = cumulative_rewards >= 1.0  # [n_active_envs]
+            truncation_done = done_array[:n_active_envs]  # [n_active_envs]
+            individual_dones = np.logical_or(success_done, truncation_done).astype(np.float32)
 
             # Store step data (only for active envs)
             episode_actions.append(action[:n_active_envs])
