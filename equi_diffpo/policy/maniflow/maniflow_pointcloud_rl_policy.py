@@ -119,7 +119,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
                  language_conditioned: bool = False,
                  # RL-specific parameters
                  noise_method: str = "flow_sde",  # flow_sde, flow_noise
-                 noise_level: float = 0.5,
+                 noise_level: float = 0.1,
                  noise_anneal: bool = False,
                  noise_params: list = [0.7, 0.3, 400],  # noise_start, noise_end, noise_anneal_steps
                  noise_logvar_range: list = [0.08, 0.16],  # for flow_noise
