@@ -154,6 +154,10 @@ class RobomimicRLRunner(RobomimicImageRunner):
         past_action = None
         policy.reset()
 
+        # Track cumulative rewards to detect new successes
+        # (env.step returns cumulative max, we need per-chunk reward)
+        prev_cumulative_rewards = np.zeros(n_active_envs)
+
         env_name = self.env_meta['env_name']
         pbar = tqdm.tqdm(total=self.max_steps, desc=f"RL Rollout {env_name} {chunk_idx+1}/{n_chunks}",
             leave=False, mininterval=self.tqdm_interval_sec)
@@ -205,9 +209,23 @@ class RobomimicRLRunner(RobomimicImageRunner):
 
             obs, reward, done_array, info = env.step(env_action)
 
-            # Debug: print reward if non-zero (sparse reward detection)
-            if np.any(reward[:n_active_envs] > 0):
-                print(f"  🎯 Non-zero reward at step {step_count}: {reward[:n_active_envs]}")
+            # reward is cumulative max from MultiStepWrapper - extract actual chunk reward
+            # (once success occurs, cumulative max stays at 1 forever, but we need per-chunk reward)
+            cumulative_rewards = reward[:n_active_envs]  # Current cumulative max
+
+            # Actual reward = increase in cumulative (new success), else 0
+            actual_rewards = np.where(
+                cumulative_rewards > prev_cumulative_rewards,
+                cumulative_rewards - prev_cumulative_rewards,  # New success
+                0.0  # No new success (repeated signal)
+            )
+
+            # Debug: print if new success detected
+            if np.any(actual_rewards > 0):
+                print(f"  🎯 New success at step {step_count}: {actual_rewards}")
+
+            # Update tracker for next chunk
+            prev_cumulative_rewards = cumulative_rewards.copy()
 
             # Store individual environment done flags (per env tracking)
             # 不用于控制循环，只用于 loss mask
@@ -216,12 +234,8 @@ class RobomimicRLRunner(RobomimicImageRunner):
             # Store step data (only for active envs)
             episode_actions.append(action[:n_active_envs])
 
-            # Handle reward structure: env returns [n_envs] but we need consistent shape
-            # Convert to [n_active_envs, 1] - chunk-level reward (one reward per action chunk)
-            # The advantage calculator handles broadcasting to action_chunk dimension
-            step_rewards = reward[:n_active_envs]
-            if len(step_rewards.shape) == 1:
-                step_rewards = step_rewards.reshape(-1, 1)  # [n_active_envs, 1]
+            # Store actual per-chunk reward [n_active_envs, 1]
+            step_rewards = actual_rewards.reshape(-1, 1)
             episode_rewards.append(step_rewards)
 
             episode_dones.append(individual_dones[:n_active_envs])
