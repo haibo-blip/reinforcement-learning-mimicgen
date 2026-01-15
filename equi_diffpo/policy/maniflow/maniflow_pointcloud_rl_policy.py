@@ -17,7 +17,7 @@ from einops import reduce
 from termcolor import cprint
 
 from equi_diffpo.model.common.normalizer import LinearNormalizer
-from equi_diffpo.model.common.value_head import ValueHead
+from equi_diffpo.model.common.value_head import ValueHead, AttentionPool
 from equi_diffpo.policy.base_image_policy import BaseImagePolicy
 from equi_diffpo.common.pytorch_util import dict_apply
 from equi_diffpo.common.model_util import print_params
@@ -125,6 +125,8 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
                  noise_logvar_range: list = [0.08, 0.16],  # for flow_noise
                  add_value_head: bool = True,
                  value_hidden_sizes: tuple = (512, 256, 128),
+                 use_attention_pool: bool = True,  # Use attention pooling instead of mean
+                 attention_pool_heads: int = 4,  # Number of attention heads (1 = single-head)
                  safe_get_logprob: bool = False,
                  joint_logprob: bool = False,  # like Pi0.5
                  freeze_encoder: bool = True,  # Freeze visual encoder during RL training
@@ -224,6 +226,15 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             self.noise_head = None
 
         if add_value_head:
+            # Attention pooling for vis_cond (if enabled)
+            if use_attention_pool:
+                self.attention_pool = AttentionPool(
+                    feature_dim=obs_feature_dim,
+                    num_heads=attention_pool_heads
+                )
+            else:
+                self.attention_pool = None
+
             # Value estimation head
             self.value_head = ValueHead(
                 input_dim=global_cond_dim or obs_feature_dim,
@@ -233,6 +244,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
                 bias_last=True
             )
         else:
+            self.attention_pool = None
             self.value_head = None
 
         # Store other parameters (following original maniflow_pointcloud_policy)
@@ -267,6 +279,10 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         cprint(f"  - n_obs_steps: {self.n_obs_steps}", "yellow")
         cprint(f"  - num_inference_steps: {self.num_inference_steps}", "yellow")
         cprint(f"  - add_value_head: {add_value_head}", "yellow")
+        if add_value_head:
+            cprint(f"  - use_attention_pool: {use_attention_pool}", "yellow")
+            if use_attention_pool:
+                cprint(f"  - attention_pool_heads: {attention_pool_heads}", "yellow")
 
         print_params(self)
 
@@ -295,8 +311,13 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         """
         if self.value_head is None:
             return torch.zeros(vis_cond.shape[0], device=vis_cond.device)
+
         # Pool observation features across sequence dimension for value estimation
-        obs_features_pooled = vis_cond.mean(dim=1)  # [B, obs_feature_dim]
+        if self.attention_pool is not None:
+            obs_features_pooled = self.attention_pool(vis_cond)  # [B, obs_feature_dim]
+        else:
+            obs_features_pooled = vis_cond.mean(dim=1)  # [B, obs_feature_dim]
+
         return self.value_head(obs_features_pooled).squeeze(-1)  # [B]
 
     def get_current_noise_level(self) -> float:
@@ -832,7 +853,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         """
         # Encode observations
         vis_cond = self.encode_observations(obs_dict)
-        import ipdb; ipdb.set_trace()
+        # import ipdb; ipdb.set_trace()
         value = next(iter(obs_dict.values()))
         B = value.shape[0]
         T = self.horizon
