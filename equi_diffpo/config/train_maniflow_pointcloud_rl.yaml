@@ -105,7 +105,7 @@ rl_training:
     critic_lr: 1.0e-4
 
     # Flow SDE parameters (following RLinf pi0.5 approach)
-    noise_level: 0.5  # Fixed noise level for flow SDE
+    noise_level: 0.1  # Fixed noise level for flow SDE
     num_inference_steps: 10  # Number of denoising steps
 
 # Training configuration

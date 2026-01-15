@@ -112,8 +112,8 @@ class RobomimicRLRunner(RobomimicImageRunner):
         # Standard logging (inherited from parent)
         log_data = self._log_standard_metrics(all_video_paths, all_rewards, n_inits)
 
-        # Add RL-specific metrics
-        log_data.update(self._log_rl_metrics(combined_rl_data))
+        # Add RL-specific metrics (with video paths for RL-specific video logging)
+        log_data.update(self._log_rl_metrics(combined_rl_data, video_paths=all_video_paths))
 
         # Return combined data for RL training
         result = {
@@ -130,6 +130,12 @@ class RobomimicRLRunner(RobomimicImageRunner):
     def _collect_rl_chunk(self, env, policy: ManiFlowRLPointcloudPolicy, device,
                          n_active_envs: int, chunk_idx: int, n_chunks: int) -> Dict[str, List]:
         """Collect RL data for one chunk of environments."""
+
+        # Debug: print noise level for this rollout
+        if hasattr(policy, 'get_current_noise_level'):
+            print(f"  📢 Noise level: {policy.get_current_noise_level():.4f}")
+        if hasattr(policy, 'noise_method'):
+            print(f"  📢 Noise method: {policy.noise_method}")
 
         # Initialize episode data storage
         episode_observations = []
@@ -198,6 +204,10 @@ class RobomimicRLRunner(RobomimicImageRunner):
                 env_action = self.undo_transform_action(action)
 
             obs, reward, done_array, info = env.step(env_action)
+
+            # Debug: print reward if non-zero (sparse reward detection)
+            if np.any(reward[:n_active_envs] > 0):
+                print(f"  🎯 Non-zero reward at step {step_count}: {reward[:n_active_envs]}")
 
             # Store individual environment done flags (per env tracking)
             # 不用于控制循环，只用于 loss mask
@@ -376,12 +386,20 @@ class RobomimicRLRunner(RobomimicImageRunner):
 
         return log_data
 
-    def _log_rl_metrics(self, rl_data: Dict) -> Dict:
+    def _log_rl_metrics(self, rl_data: Dict, video_paths: List = None) -> Dict:
         """Log RL-specific metrics."""
         if not rl_data:
             return {}
 
         log_data = {}
+
+        # Log RL rollout videos (separate from eval videos)
+        if video_paths is not None:
+            n_videos_to_log = min(3, len(video_paths))  # Log up to 3 videos
+            for i in range(n_videos_to_log):
+                if video_paths[i] is not None:
+                    rl_video = wandb.Video(video_paths[i])
+                    log_data[f'rl_rollout_video_{i}'] = rl_video
 
         # Basic RL metrics
         log_data['rl_total_steps'] = rl_data['total_steps']
@@ -415,11 +433,16 @@ class RobomimicRLRunner(RobomimicImageRunner):
         log_data['rl_mean_logprob'] = float(np.mean(prev_logprobs))
         log_data['rl_std_logprob'] = float(np.std(prev_logprobs))
 
+        # Count successful episodes (reward > 0 means success in sparse reward setting)
+        n_successful_steps = np.sum(rewards > 0)
+        log_data['rl_successful_steps'] = int(n_successful_steps)
+
         print(f"📊 RL Metrics:")
         print(f"  - Total steps: {log_data['rl_total_steps']}")
         print(f"  - Episodes: {log_data['rl_num_episodes']}")
         print(f"  - Total reward: {log_data['rl_total_reward']:.4f}")
         print(f"  - Mean reward: {log_data['rl_mean_step_reward']:.4f}")
+        print(f"  - Successful steps: {n_successful_steps}")
         print(f"  - Mean value: {log_data['rl_mean_value_estimate']:.4f}")
 
         return log_data
