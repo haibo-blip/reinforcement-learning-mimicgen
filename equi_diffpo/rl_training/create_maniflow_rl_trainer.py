@@ -140,17 +140,10 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
     rl_config = cfg.get('rl_training', {})
     ppo_trainer_config = rl_config.get('ppo_trainer', {})
 
-    # Calculate total timesteps from num_rollouts
-    num_envs = rl_config.get('num_envs', cfg.task.env_runner.get('n_envs', 16))
-    num_steps_per_rollout = rl_config.get('num_steps_per_rollout', 20)
-    num_rollouts = rl_config.get('num_rollouts', 100)
-    samples_per_rollout = num_envs * num_steps_per_rollout
-    total_timesteps = num_rollouts * samples_per_rollout
-
     ppo_config = PPOConfig(
-        total_timesteps=total_timesteps,
-        num_envs=num_envs,
-        num_steps_per_rollout=num_steps_per_rollout,
+        total_timesteps=rl_config.get('num_epochs', 100) * 10000,  # Convert epochs to timesteps
+        num_envs=cfg.task.env_runner.get('n_envs', 8),
+        num_steps_per_rollout=256,
         batch_size=ppo_trainer_config.get('mini_batch_size', 128),
         num_epochs=ppo_trainer_config.get('ppo_epochs', 4),
         learning_rate=ppo_trainer_config.get('policy_lr', 3e-4),
@@ -189,9 +182,6 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
     print(f"🚀 ManiFlow RL Trainer created from config")
     print(f"  - Policy parameters: {sum(p.numel() for p in policy.parameters()):,}")
     print(f"  - Number of environments: {ppo_config.num_envs}")
-    print(f"  - Steps per rollout: {ppo_config.num_steps_per_rollout}")
-    print(f"  - Samples per rollout: {ppo_config.num_envs * ppo_config.num_steps_per_rollout}")
-    print(f"  - Total rollouts: {num_rollouts}")
     print(f"  - Denoising steps: {cfg.policy.get('num_inference_steps', 4)}")
     print(f"  - Action chunk size: {cfg.get('n_action_steps', 8)}")
     print(f"  - Observation steps: {cfg.get('n_obs_steps', 2)}")
