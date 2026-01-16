@@ -147,6 +147,7 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
 
         # PPO hyperparameters
         learning_rate=rl_config.get('learning_rate', 1e-5),
+        value_lr=rl_config.get('value_lr', 2e-4),  # Critic LR (~20x higher, like RLinf)
         clip_range=rl_config.get('clip_range', 0.2),
         entropy_coef=rl_config.get('entropy_coef', 0),
         value_coef=rl_config.get('value_coef', 0.5),

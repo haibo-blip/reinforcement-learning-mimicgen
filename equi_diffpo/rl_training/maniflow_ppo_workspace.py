@@ -30,9 +30,7 @@ class PPOConfig:
     # Training
     total_timesteps: int = 1000000
     num_envs: int = 8
-    num_steps_per_rollout: int = 256  # Steps per rollout per environment
     batch_size: int = 512             # Minibatch size for training
-    num_epochs: int = 4               # PPO epochs per rollout
     max_grad_norm: float = 0.5        # Gradient clipping
 
     # PPO parameters
@@ -45,12 +43,12 @@ class PPOConfig:
     critic_warmup_rollouts: int = 0   # Number of rollouts to warmup critic before training actor
 
     # Learning rates
-    learning_rate: float = 3e-4       # Adam learning rate
+    learning_rate: float = 3e-4       # Actor learning rate
+    value_lr: float = 1e-4            # Critic learning rate (typically higher than actor)
     lr_schedule: str = "linear"       # linear, constant, cosine
     warmup_steps: int = 10000         # LR warmup steps
 
     # Environment
-    max_episode_length: int = 1000
     action_chunk_size: int = 8
     obs_chunk_size: int = 2
 
@@ -74,7 +72,7 @@ class PPOConfig:
         print(f"  - Total timesteps: {self.total_timesteps:,}")
         print(f"  - Num envs: {self.num_envs}")
         print(f"  - Batch size: {self.batch_size}")
-        print(f"  - Learning rate: {self.learning_rate}")
+        print(f"  - Actor LR: {self.learning_rate}, Critic LR: {self.value_lr}")
         print(f"  - Clip range: {self.clip_range}")
 
 
@@ -111,12 +109,8 @@ class ManiFlowPPOTrainer:
 
         self.advantage_calculator = ManiFlowAdvantageCalculator(advantage_config)
 
-        # Setup optimizer
-        self.optimizer = optim.Adam(
-            self.policy.parameters(),
-            lr=self.config.learning_rate,
-            eps=1e-5
-        )
+        # Setup optimizer with separate learning rates for actor and critic (like RLinf)
+        self.optimizer = self._build_optimizer()
 
         # Learning rate scheduler
         # Estimate total rollouts: ~1600 samples per rollout (50 episodes * ~32 steps)
@@ -169,6 +163,56 @@ class ManiFlowPPOTrainer:
 
         # 🔍 检查 visual encoder 是否被冻结
         self._check_visual_encoder_frozen()
+
+    def _build_optimizer(self) -> optim.Optimizer:
+        """
+        Build optimizer with separate learning rates for actor and critic (following RLinf).
+
+        Actor parameters use config.learning_rate (lower for stability)
+        Critic/value_head parameters use config.value_lr (higher for faster value learning)
+        """
+        params_actor = []
+        params_critic = []
+
+        for name, param in self.policy.named_parameters():
+            if param.requires_grad:
+                # Check if this is a value head parameter
+                if "value_head" in name or "value_mlp" in name:
+                    params_critic.append(param)
+                else:
+                    params_actor.append(param)
+
+        # Build parameter groups with different learning rates
+        param_groups = []
+
+        if len(params_actor) > 0:
+            param_groups.append({
+                "params": params_actor,
+                "lr": self.config.learning_rate,
+                "name": "actor"
+            })
+
+        if len(params_critic) > 0:
+            param_groups.append({
+                "params": params_critic,
+                "lr": self.config.value_lr,
+                "name": "critic"
+            })
+
+        optimizer = optim.AdamW(
+            param_groups,
+            eps=1e-5,
+            weight_decay=0.01
+        )
+
+        # Log parameter counts
+        actor_params = sum(p.numel() for p in params_actor)
+        critic_params = sum(p.numel() for p in params_critic)
+        print(f"\n📊 Optimizer setup (separate LRs like RLinf):")
+        print(f"  - Actor params: {actor_params:,} (lr={self.config.learning_rate})")
+        print(f"  - Critic params: {critic_params:,} (lr={self.config.value_lr})")
+
+        return optimizer
 
     def _check_visual_encoder_frozen(self):
         """检查 visual encoder 的冻结状态"""
@@ -393,15 +437,29 @@ class ManiFlowPPOTrainer:
         old_logprobs = mini_batch['prev_logprobs']  # [batch, N, action_chunk, action_dim]
         advantages = mini_batch['advantages']        # [batch, action_chunk]
         returns = mini_batch['returns']             # [batch, 1]
+        old_values = mini_batch['prev_values']      # [batch, 1] - for value clipping
         loss_mask = mini_batch.get('loss_mask')     # [batch, action_chunk] - mask for valid steps
 
         new_logprobs = policy_outputs['logprobs']    # [batch, action_chunk, action_dim]
         values = policy_outputs['values']            # [batch]
         entropy = policy_outputs['entropy']          # [batch, 1]
 
-        # Value loss (always computed)
+        # Value loss with clipping (like PPO policy clipping, following RLinf)
         values_expanded = values.unsqueeze(1)  # [batch, 1]
-        value_loss_unmasked = (values_expanded - returns) ** 2
+
+        # Unclipped value loss
+        value_loss_unclipped = (values_expanded - returns) ** 2
+
+        # Clipped value prediction: clip to be within clip_range of old value
+        values_clipped = old_values + torch.clamp(
+            values_expanded - old_values,
+            -self.config.clip_range,
+            self.config.clip_range
+        )
+        value_loss_clipped = (values_clipped - returns) ** 2
+
+        # Take the maximum (more pessimistic) of clipped and unclipped loss
+        value_loss_unmasked = torch.max(value_loss_unclipped, value_loss_clipped)
 
         # Apply loss mask for value loss (only for return dimension)
         if loss_mask is not None:
@@ -512,7 +570,7 @@ class ManiFlowPPOTrainer:
         flat_data['observation'] = obs_dict
 
         # Flatten other tensors
-        for key in ['chains', 'denoise_inds', 'prev_logprobs', 'advantages', 'returns', 'loss_mask','x_stds','x_means']:
+        for key in ['chains', 'denoise_inds', 'prev_logprobs', 'prev_values', 'advantages', 'returns', 'loss_mask','x_stds','x_means']:
             if key in torch_batch and torch_batch[key] is not None:
                 flat_data[key] = torch_batch[key].flatten(0, 1)
 
@@ -535,9 +593,10 @@ class ManiFlowPPOTrainer:
 
         self.rollout_metrics['rollout_rewards'].append(float(total_reward))
 
-        # Current learning rate
-        current_lr = self.optimizer.param_groups[0]['lr']
-        self.training_metrics['learning_rate'].append(current_lr)
+        # Current learning rates (separate for actor and critic)
+        actor_lr = self.optimizer.param_groups[0]['lr']
+        critic_lr = self.optimizer.param_groups[1]['lr'] if len(self.optimizer.param_groups) > 1 else actor_lr
+        self.training_metrics['learning_rate'].append(actor_lr)
 
         # Calculate FPS using actual samples collected
         actual_samples = rollout_batch.n_chunk_steps * rollout_batch.batch_size
@@ -551,7 +610,7 @@ class ManiFlowPPOTrainer:
             print(f"  - Policy loss: {training_stats['policy_loss']:.6f}")
             print(f"  - Value loss: {training_stats['value_loss']:.6f}")
             print(f"  - KL divergence: {training_stats['kl_divergence']:.6f}")
-            print(f"  - Learning rate: {current_lr:.2e}")
+            print(f"  - Actor LR: {actor_lr:.2e}, Critic LR: {critic_lr:.2e}")
             print(f"  - FPS: {fps:.1f}")
             print(f"  - Time: {rollout_time:.2f}s")
 
@@ -568,7 +627,8 @@ class ManiFlowPPOTrainer:
                 'train/kl_divergence': training_stats['kl_divergence'],
                 'train/clip_fraction': training_stats['clip_fraction'],
                 'train/explained_variance': training_stats['explained_variance'],
-                'train/learning_rate': current_lr,
+                'train/actor_lr': actor_lr,
+                'train/critic_lr': critic_lr,
                 'train/global_step': self.global_step,
                 'train/rollout_count': self.rollout_count,
                 'perf/fps': fps,

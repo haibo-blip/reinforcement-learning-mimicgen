@@ -171,6 +171,7 @@ class ManiFlowAdvantageCalculator:
         print(f"  - Advantages shape: {advantages.shape}")
         print(f"  - Returns shape: {returns.shape}")
         print(f"  - Advantage range: [{advantages.min():.3f}, {advantages.max():.3f}]")
+        print(f"  - Advantage mean: {advantages.mean():.6f}, std: {advantages.std():.6f}")
         print(f"  - Return range: [{returns.min():.3f}, {returns.max():.3f}]")
 
         # Log details for steps with rewards

@@ -88,7 +88,8 @@ rl_training:
   batch_size: 32
 
   # PPO hyperparameters
-  learning_rate: 1.0e-5      # Policy learning rate
+  learning_rate: 1.0e-5      # Actor learning rate
+  value_lr: 2.0e-4           # Critic learning rate (~20x higher, like RLinf)
   clip_range: 0.2
   entropy_coef: 0
   value_coef: 0.5
