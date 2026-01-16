@@ -434,13 +434,24 @@ class ManiFlowPPOTrainer:
         # 🔍 诊断 logging: 检查 ratio 和 logprob 变化
         with torch.no_grad():
             # 检查正 advantage 样本的 logprob 是否增加
-            positive_adv_mask = advantages > 0  # [batch, action_chunk]
+            # advantages 可能是 [batch, action_chunk] 或 [batch, 1]
+            # log_ratio 是 [batch, action_chunk]
+            # 用 batch 维度的平均 advantage 来判断
+            adv_per_sample = advantages.mean(dim=-1) if advantages.dim() > 1 else advantages  # [batch]
+            positive_adv_mask = adv_per_sample > 0  # [batch]
+
             if positive_adv_mask.any():
                 # 对于正 advantage（好的动作），新 logprob 应该比旧的大
-                pos_log_ratio = log_ratio[positive_adv_mask]
+                # 对 log_ratio 也取 batch 维度的平均
+                log_ratio_per_sample = log_ratio.mean(dim=-1) if log_ratio.dim() > 1 else log_ratio  # [batch]
+                pos_log_ratio = log_ratio_per_sample[positive_adv_mask]
                 pos_logprob_increased = (pos_log_ratio > 0).float().mean()
-                pos_old_logprob = old_logprobs_flat[positive_adv_mask].mean()
-                pos_new_logprob = new_logprobs_flat[positive_adv_mask].mean()
+
+                old_logprob_per_sample = old_logprobs_flat.mean(dim=-1) if old_logprobs_flat.dim() > 1 else old_logprobs_flat
+                new_logprob_per_sample = new_logprobs_flat.mean(dim=-1) if new_logprobs_flat.dim() > 1 else new_logprobs_flat
+                pos_old_logprob = old_logprob_per_sample[positive_adv_mask].mean()
+                pos_new_logprob = new_logprob_per_sample[positive_adv_mask].mean()
+
                 print(f"  🎯 正 Advantage 样本 ({positive_adv_mask.sum().item()} 个):")
                 print(f"     - old_logprob: {pos_old_logprob:.4f}, new_logprob: {pos_new_logprob:.4f}")
                 print(f"     - logprob 增加比例: {pos_logprob_increased:.2%}")
@@ -480,7 +491,9 @@ class ManiFlowPPOTrainer:
 
         # Additional metrics (with masking)
         with torch.no_grad():
-            kl_unmasked = (old_logprobs_flat - new_logprobs_flat) ** 2
+            # Use k2 KL estimator: (ratio - 1) - log_ratio (following DPPO)
+            # This is more stable than squared difference
+            kl_unmasked = (ratio - 1) - log_ratio
             if loss_mask is not None:
                 kl_divergence = masked_mean(kl_unmasked, loss_mask.bool())
                 clip_fraction = masked_mean(

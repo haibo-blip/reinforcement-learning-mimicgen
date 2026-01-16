@@ -158,7 +158,7 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
         max_episode_length=cfg.task.env_runner.get('max_steps', 400),
         action_chunk_size=cfg.get('n_action_steps', 8),
         obs_chunk_size=cfg.get('n_obs_steps', 2),
-        critic_warmup_rollouts=cfg.get('critic_warmup_rollouts', 10)
+        critic_warmup_rollouts=cfg.get('critic_warmup_rollouts', 0)
     )
 
     # 6. Create advantage config
