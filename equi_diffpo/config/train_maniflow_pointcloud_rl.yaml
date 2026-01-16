@@ -82,35 +82,34 @@ policy:
 
 # RL Training Configuration
 rl_training:
-  num_rollouts: 100         # Total number of rollout iterations (training steps)
-  checkpoint_every: 10
-  val_every: 20
+  # Core training parameters
+  total_timesteps: 1000000
+  num_envs: 14
+  batch_size: 32
 
-  # RL Training Parameters - 320 samples per rollout (like RLinf Pi0.5)
-  num_envs: 16              # Number of parallel environments
-  num_steps_per_rollout: 20  # Steps per environment per rollout
-  # Total samples per rollout = 16 * 20 = 320
-  collect_n_episodes: 16  # Number of episodes to collect per training iteration
+  # PPO hyperparameters
+  learning_rate: 1.0e-5      # Policy learning rate
+  clip_range: 0.2
+  entropy_coef: 0
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  target_kl: 0.03
 
-  # PPO Training
-  ppo_trainer:
-    # PPO hyperparameters
-    clip_ratio: 0.2
-    entropy_coef: 0
-    value_loss_coef: 0.5
-    max_grad_norm: 0.5
+  # GAE parameters
+  gamma: 0.99
+  gae_lambda: 0.95
 
-    # GAE parameters
-    gamma: 0.99
-    gae_lambda: 0.95
+  # Learning rate schedule
+  lr_schedule: "linear"
+  warmup_steps: 10000
 
-    # Training parameters
-    ppo_epochs: 4
-    mini_batch_size: 32
-    policy_lr: 1.0e-5  # Lower learning rate for fine-tuning
-    critic_lr: 1.0e-4
+  # Logging and checkpointing
+  eval_interval: 3           # Eval every N rollouts
+  log_interval: 10
+  save_interval: 100
 
-    # Flow SDE parameters (following RLinf pi0.5 approach)
+  # Critic warmup
+  critic_warmup_rollouts: 0
 
 # Training configuration
 training:

@@ -136,35 +136,46 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
     else:
         print("⚠️  No dataset config found - normalizer must be set manually")
 
-    # 5. Create PPO config from hydra config
+    # 5. Create PPO config from hydra config - all parameters from rl_training
     rl_config = cfg.get('rl_training', {})
-    ppo_trainer_config = rl_config.get('ppo_trainer', {})
 
     ppo_config = PPOConfig(
-        total_timesteps=rl_config.get('num_epochs', 100) * 10000,  # Convert epochs to timesteps
-        num_envs=cfg.task.env_runner.get('n_envs', 8),
-        num_steps_per_rollout=256,
-        batch_size=ppo_trainer_config.get('mini_batch_size', 128),
-        num_epochs=ppo_trainer_config.get('ppo_epochs', 4),
-        learning_rate=ppo_trainer_config.get('policy_lr', 3e-4),
-        clip_range=ppo_trainer_config.get('clip_ratio', 0.2),
-        entropy_coef=ppo_trainer_config.get('entropy_coef', 0.01),
-        value_coef=ppo_trainer_config.get('value_loss_coef', 0.5),
-        max_grad_norm=ppo_trainer_config.get('max_grad_norm', 0.5),
-        target_kl=0.03,
+        # Core training parameters
+        total_timesteps=rl_config.get('total_timesteps', 1000000),
+        num_envs=rl_config.get('num_envs', 14),
+        batch_size=rl_config.get('batch_size', 32),
+
+        # PPO hyperparameters
+        learning_rate=rl_config.get('learning_rate', 1e-5),
+        clip_range=rl_config.get('clip_range', 0.2),
+        entropy_coef=rl_config.get('entropy_coef', 0),
+        value_coef=rl_config.get('value_coef', 0.5),
+        max_grad_norm=rl_config.get('max_grad_norm', 0.5),
+        target_kl=rl_config.get('target_kl', 0.03),
+
+        # Learning rate schedule
+        lr_schedule=rl_config.get('lr_schedule', 'linear'),
+        warmup_steps=rl_config.get('warmup_steps', 10000),
+
+        # Logging and checkpointing
+        eval_interval=rl_config.get('eval_interval', 3),
+        log_interval=rl_config.get('log_interval', 10),
+        save_interval=rl_config.get('save_interval', 100),
         wandb_project=cfg.get('logging', {}).get('project', 'maniflow_rl'),
         wandb_run_name=cfg.get('logging', {}).get('name', 'ppo_training'),
-        # Pass max_episode_length from config to avoid duplicate collector with wrong value
-        max_episode_length=cfg.task.env_runner.get('max_steps', 400),
+
+        # Environment parameters (from task config)
         action_chunk_size=cfg.get('n_action_steps', 8),
         obs_chunk_size=cfg.get('n_obs_steps', 2),
-        critic_warmup_rollouts=cfg.get('critic_warmup_rollouts', 0)
+
+        # Critic warmup
+        critic_warmup_rollouts=rl_config.get('critic_warmup_rollouts', 0),
     )
 
-    # 6. Create advantage config
+    # 6. Create advantage config - parameters from rl_training
     advantage_config = AdvantageConfig(
-        gamma=ppo_trainer_config.get('gamma', 0.99),
-        gae_lambda=ppo_trainer_config.get('gae_lambda', 0.95),
+        gamma=rl_config.get('gamma', 0.99),
+        gae_lambda=rl_config.get('gae_lambda', 0.95),
         advantage_type="gae",
         normalize_advantages=True,
     )

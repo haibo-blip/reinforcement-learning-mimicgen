@@ -73,7 +73,6 @@ class PPOConfig:
         print(f"🚀 PPO Config:")
         print(f"  - Total timesteps: {self.total_timesteps:,}")
         print(f"  - Num envs: {self.num_envs}")
-        print(f"  - Steps per rollout: {self.num_steps_per_rollout}")
         print(f"  - Batch size: {self.batch_size}")
         print(f"  - Learning rate: {self.learning_rate}")
         print(f"  - Clip range: {self.clip_range}")
@@ -120,12 +119,15 @@ class ManiFlowPPOTrainer:
         )
 
         # Learning rate scheduler
+        # Estimate total rollouts: ~1600 samples per rollout (50 episodes * ~32 steps)
+        estimated_samples_per_rollout = 1600
+        estimated_total_rollouts = self.config.total_timesteps // estimated_samples_per_rollout
         if self.config.lr_schedule == "linear":
             self.lr_scheduler = optim.lr_scheduler.LinearLR(
                 self.optimizer,
                 start_factor=1.0,
                 end_factor=0.0,
-                total_iters=self.config.total_timesteps // (self.config.num_envs * self.config.num_steps_per_rollout)
+                total_iters=estimated_total_rollouts
             )
         else:
             self.lr_scheduler = None
@@ -222,7 +224,6 @@ class ManiFlowPPOTrainer:
             print(f"🔥 Critic warmup: {self.config.critic_warmup_rollouts} rollouts before training actor")
 
         start_time = time.time()
-        steps_per_rollout = self.config.num_envs * self.config.num_steps_per_rollout
 
         while self.global_step < self.config.total_timesteps:
             rollout_start_time = time.time()
@@ -233,6 +234,9 @@ class ManiFlowPPOTrainer:
                 num_envs=self.config.num_envs
             )
 
+            # Get actual samples collected
+            actual_samples = rollout_batch.n_chunk_steps * rollout_batch.batch_size
+
             # Stage 2: Calculate advantages and returns
             rollout_batch = self.advantage_calculator.calculate_advantages_and_returns(rollout_batch)
 
@@ -240,8 +244,8 @@ class ManiFlowPPOTrainer:
             critic_only = self.rollout_count < self.config.critic_warmup_rollouts
             training_stats = self.run_ppo_training(rollout_batch, critic_only=critic_only)
 
-            # Update global step
-            self.global_step += steps_per_rollout
+            # Update global step with actual samples collected
+            self.global_step += actual_samples
             self.rollout_count += 1
 
             # Metrics and logging
@@ -535,8 +539,9 @@ class ManiFlowPPOTrainer:
         current_lr = self.optimizer.param_groups[0]['lr']
         self.training_metrics['learning_rate'].append(current_lr)
 
-        # Calculate FPS (needed for both console and wandb logging)
-        fps = (self.config.num_envs * self.config.num_steps_per_rollout) / rollout_time
+        # Calculate FPS using actual samples collected
+        actual_samples = rollout_batch.n_chunk_steps * rollout_batch.batch_size
+        fps = actual_samples / rollout_time
 
         # Console logging
         if self.rollout_count % self.config.log_interval == 0:
