@@ -361,7 +361,7 @@ class ManiFlowPPOTrainer:
             self.lr_scheduler.step()
 
         # Update policy global step for noise annealing
-        self.policy.set_global_step(self.global_step)
+        self.policy.set_global_step(self.rollout_count)
 
         # Following RLinf pattern: Restore policy to eval mode after training
         self.policy.eval()
@@ -431,38 +431,6 @@ class ManiFlowPPOTrainer:
         log_ratio = new_logprobs_flat - old_logprobs_flat
         ratio = torch.exp(log_ratio)
 
-        # 🔍 诊断 logging: 检查 ratio 和 logprob 变化
-        with torch.no_grad():
-            # 检查正 advantage 样本的 logprob 是否增加
-            # advantages 可能是 [batch, action_chunk] 或 [batch, 1]
-            # log_ratio 是 [batch, action_chunk]
-            # 用 batch 维度的平均 advantage 来判断
-            adv_per_sample = advantages.mean(dim=-1) if advantages.dim() > 1 else advantages  # [batch]
-            positive_adv_mask = adv_per_sample > 0  # [batch]
-
-            if positive_adv_mask.any():
-                # 对于正 advantage（好的动作），新 logprob 应该比旧的大
-                # 对 log_ratio 也取 batch 维度的平均
-                log_ratio_per_sample = log_ratio.mean(dim=-1) if log_ratio.dim() > 1 else log_ratio  # [batch]
-                pos_log_ratio = log_ratio_per_sample[positive_adv_mask]
-                pos_logprob_increased = (pos_log_ratio > 0).float().mean()
-
-                old_logprob_per_sample = old_logprobs_flat.mean(dim=-1) if old_logprobs_flat.dim() > 1 else old_logprobs_flat
-                new_logprob_per_sample = new_logprobs_flat.mean(dim=-1) if new_logprobs_flat.dim() > 1 else new_logprobs_flat
-                pos_old_logprob = old_logprob_per_sample[positive_adv_mask].mean()
-                pos_new_logprob = new_logprob_per_sample[positive_adv_mask].mean()
-
-                print(f"  🎯 正 Advantage 样本 ({positive_adv_mask.sum().item()} 个):")
-                print(f"     - old_logprob: {pos_old_logprob:.4f}, new_logprob: {pos_new_logprob:.4f}")
-                print(f"     - logprob 增加比例: {pos_logprob_increased:.2%}")
-                print(f"     - 平均 log_ratio: {pos_log_ratio.mean():.4f}")
-
-            # 整体 ratio 统计
-            print(f"  📊 Ratio 统计:")
-            print(f"     - mean: {ratio.mean():.4f}, std: {ratio.std():.4f}")
-            print(f"     - min: {ratio.min():.4f}, max: {ratio.max():.4f}")
-            print(f"     - clip_fraction: {(torch.abs(ratio - 1.0) > self.config.clip_range).float().mean():.2%}")
-
         # Clipped policy loss (PPO objective)
         clipped_ratio = torch.clamp(ratio, 1.0 - self.config.clip_range, 1.0 + self.config.clip_range)
         policy_loss_1 = -advantages * ratio
@@ -491,9 +459,7 @@ class ManiFlowPPOTrainer:
 
         # Additional metrics (with masking)
         with torch.no_grad():
-            # Use k2 KL estimator: (ratio - 1) - log_ratio (following DPPO)
-            # This is more stable than squared difference
-            kl_unmasked = (ratio - 1) - log_ratio
+            kl_unmasked = (old_logprobs_flat - new_logprobs_flat) ** 2
             if loss_mask is not None:
                 kl_divergence = masked_mean(kl_unmasked, loss_mask.bool())
                 clip_fraction = masked_mean(

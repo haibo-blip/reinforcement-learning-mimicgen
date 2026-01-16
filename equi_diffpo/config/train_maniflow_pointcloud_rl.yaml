@@ -32,7 +32,7 @@ policy:
   horizon: ${horizon}
   n_action_steps: ${n_action_steps}
   n_obs_steps: ${n_obs_steps}
-  num_inference_steps: 3
+  num_inference_steps: 4
   obs_as_global_cond: True
 
   # DiTX Transformer architecture
@@ -57,6 +57,9 @@ policy:
   diffusion_timestep_embed_dim: 128
   diffusion_target_t_embed_dim: 128
   noise_level: 0.1
+  # Noise annealing: start low, increase with training (like RLinf)
+  noise_anneal: true
+  noise_params: [0.1, 0.5, 100]  # [noise_start, noise_end, anneal_steps]
   # Point cloud encoder parameters
   encoder_type: "DP3Encoder"
   crop_shape: null
@@ -79,11 +82,14 @@ policy:
 
 # RL Training Configuration
 rl_training:
-  num_epochs: 100
+  num_rollouts: 100         # Total number of rollout iterations (training steps)
   checkpoint_every: 10
   val_every: 20
 
-  # RL Training Parameters
+  # RL Training Parameters - 320 samples per rollout (like RLinf Pi0.5)
+  num_envs: 16              # Number of parallel environments
+  num_steps_per_rollout: 20  # Steps per environment per rollout
+  # Total samples per rollout = 16 * 20 = 320
   collect_n_episodes: 16  # Number of episodes to collect per training iteration
 
   # PPO Training
