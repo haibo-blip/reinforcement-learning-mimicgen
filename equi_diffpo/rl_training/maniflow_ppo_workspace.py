@@ -327,6 +327,9 @@ class ManiFlowPPOTrainer:
         else:
             print("🔥 Running PPO training (Pi0.5 style: 1 epoch, no early stop)...")
 
+        # Reset debug counter for this rollout
+        self._debug_counter = 0
+
         # Convert to torch
         torch_batch = rollout_batch.to_torch(self.device)
 
@@ -443,6 +446,20 @@ class ManiFlowPPOTrainer:
             # Get advantages and find positive ones
             advantages = flat_data['advantages']  # [total_samples, action_chunk]
             mean_advantages = advantages.mean(dim=-1)  # [total_samples]
+
+            # Print advantage distribution stats
+            n_total = len(mean_advantages)
+            n_pos = (mean_advantages > 0).sum().item()
+            n_neg = (mean_advantages < 0).sum().item()
+            adv_median = mean_advantages.median().item()
+            adv_mean = mean_advantages.mean().item()
+            adv_std = mean_advantages.std().item()
+            print(f"    📊 Advantage distribution:")
+            print(f"       - Total samples: {n_total}")
+            print(f"       - Positive: {n_pos} ({n_pos/n_total*100:.1f}%), Negative: {n_neg} ({n_neg/n_total*100:.1f}%)")
+            print(f"       - Mean: {adv_mean:.4f}, Median: {adv_median:.4f}, Std: {adv_std:.4f}")
+            if abs(adv_median) > 0.3:
+                print(f"       ⚠️ Median far from 0 indicates skewed distribution!")
 
             # Find indices of positive advantage samples
             positive_mask = mean_advantages > 0
@@ -649,6 +666,40 @@ class ManiFlowPPOTrainer:
         policy_loss_1 = -advantages * ratio
         policy_loss_2 = -advantages * clipped_ratio
         policy_loss_unmasked = torch.max(policy_loss_1, policy_loss_2)
+
+        # Debug: Analyze positive vs negative advantage samples
+        with torch.no_grad():
+            adv_mean = advantages.mean(dim=-1)  # [batch]
+            pos_mask = adv_mean > 0
+            neg_mask = adv_mean < 0
+            n_pos = pos_mask.sum().item()
+            n_neg = neg_mask.sum().item()
+
+            if n_pos > 0 and n_neg > 0 and hasattr(self, '_debug_counter'):
+                self._debug_counter += 1
+                if self._debug_counter % 50 == 1:  # Print every 50 batches
+                    ratio_mean = ratio.mean(dim=-1)  # [batch]
+                    log_ratio_mean = log_ratio.mean(dim=-1)  # [batch]
+
+                    # Positive samples stats
+                    pos_ratio = ratio_mean[pos_mask].mean().item()
+                    pos_log_ratio = log_ratio_mean[pos_mask].mean().item()
+                    pos_clipped = ((ratio_mean[pos_mask] > 1 + self.config.clip_range) |
+                                   (ratio_mean[pos_mask] < 1 - self.config.clip_range)).float().mean().item()
+                    pos_loss = policy_loss_unmasked[pos_mask].mean().item()
+
+                    # Negative samples stats
+                    neg_ratio = ratio_mean[neg_mask].mean().item()
+                    neg_log_ratio = log_ratio_mean[neg_mask].mean().item()
+                    neg_clipped = ((ratio_mean[neg_mask] > 1 + self.config.clip_range) |
+                                   (ratio_mean[neg_mask] < 1 - self.config.clip_range)).float().mean().item()
+                    neg_loss = policy_loss_unmasked[neg_mask].mean().item()
+
+                    print(f"\n      🔬 PPO Debug (batch {self._debug_counter}):")
+                    print(f"         Positive ({n_pos}): ratio={pos_ratio:.4f}, log_ratio={pos_log_ratio:.4f}, clipped={pos_clipped*100:.1f}%, loss={pos_loss:.4f}")
+                    print(f"         Negative ({n_neg}): ratio={neg_ratio:.4f}, log_ratio={neg_log_ratio:.4f}, clipped={neg_clipped*100:.1f}%, loss={neg_loss:.4f}")
+            elif not hasattr(self, '_debug_counter'):
+                self._debug_counter = 0
 
         # Apply loss mask if available
         if loss_mask is not None:
