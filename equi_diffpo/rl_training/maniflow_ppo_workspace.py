@@ -465,11 +465,10 @@ class ManiFlowPPOTrainer:
                 else:
                     eval_batch[key] = value[eval_indices]
 
-            # Get old logprobs
-            old_logprobs = eval_batch['prev_logprobs']  # [n_eval, N, action_chunk, action_dim]
-            old_logprobs_avg = old_logprobs.mean(dim=1)  # [n_eval, action_chunk, action_dim]
-            old_logprobs_sum = old_logprobs_avg.sum(dim=-1)  # [n_eval, action_chunk]
-            old_logprobs_mean = old_logprobs_sum.mean(dim=-1)  # [n_eval]
+            # Get old logprobs: [n_eval, N, action_chunk, action_dim]
+            old_logprobs = eval_batch['prev_logprobs']
+            # Average over N (denoising steps), sum over action_dim, mean over action_chunk
+            old_logprobs_processed = old_logprobs.mean(dim=1).sum(dim=-1).mean(dim=-1)  # [n_eval]
 
             # Forward pass to get new logprobs
             policy_outputs = self.policy.default_forward(
@@ -482,13 +481,15 @@ class ManiFlowPPOTrainer:
                 compute_values=True
             )
 
-            new_logprobs = policy_outputs['logprobs']  # [n_eval, action_chunk, action_dim]
-            new_logprobs_avg = new_logprobs.mean(dim=1)  # Average over denoising if needed
-            new_logprobs_sum = new_logprobs.sum(dim=-1)  # [n_eval, action_chunk]
-            new_logprobs_mean = new_logprobs_sum.mean(dim=-1)  # [n_eval]
+            # New logprobs: handle both 3D and 4D shapes
+            new_logprobs = policy_outputs['logprobs']
+            if new_logprobs.dim() == 4:  # [n_eval, N, action_chunk, action_dim]
+                new_logprobs_processed = new_logprobs.mean(dim=1).sum(dim=-1).mean(dim=-1)  # [n_eval]
+            else:  # [n_eval, action_chunk, action_dim]
+                new_logprobs_processed = new_logprobs.sum(dim=-1).mean(dim=-1)  # [n_eval]
 
             # Calculate changes
-            logprob_diff = new_logprobs_mean - old_logprobs_mean  # [n_eval]
+            logprob_diff = new_logprobs_processed - old_logprobs_processed  # [n_eval]
             advantages_eval = mean_advantages[eval_indices]  # [n_eval]
 
             # Statistics
@@ -502,8 +503,8 @@ class ManiFlowPPOTrainer:
 
             print(f"    📊 Positive advantage samples ({n_eval}/{n_positive} evaluated):")
             print(f"       - Mean advantage: {mean_adv:.4f}")
-            print(f"       - Old logprob mean: {old_logprobs_mean.mean().item():.4f}")
-            print(f"       - New logprob mean: {new_logprobs_mean.mean().item():.4f}")
+            print(f"       - Old logprob mean: {old_logprobs_processed.mean().item():.4f}")
+            print(f"       - New logprob mean: {new_logprobs_processed.mean().item():.4f}")
             print(f"       - Logprob diff (new - old): {mean_diff:.6f}")
             print(f"       - % samples with increased logprob: {increased*100:.1f}%")
             print(f"       - Mean ratio (π_new/π_old): {mean_ratio:.4f}")
@@ -553,7 +554,11 @@ class ManiFlowPPOTrainer:
                     compute_values=True
                 )
 
-                new_logprobs_neg = policy_outputs_neg['logprobs'].sum(dim=-1).mean(dim=-1)
+                new_logprobs_neg_raw = policy_outputs_neg['logprobs']
+                if new_logprobs_neg_raw.dim() == 4:
+                    new_logprobs_neg = new_logprobs_neg_raw.mean(dim=1).sum(dim=-1).mean(dim=-1)
+                else:
+                    new_logprobs_neg = new_logprobs_neg_raw.sum(dim=-1).mean(dim=-1)
                 logprob_diff_neg = new_logprobs_neg - old_logprobs_neg
                 decreased = (logprob_diff_neg < 0).float().mean().item()
                 mean_diff_neg = logprob_diff_neg.mean().item()
