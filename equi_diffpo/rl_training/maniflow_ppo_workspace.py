@@ -419,7 +419,153 @@ class ManiFlowPPOTrainer:
         print(f"    - Value loss: {stats['value_loss']:.6f}")
         print(f"    - Clip fraction: {stats['clip_fraction']:.2%}")
 
+        # Evaluate logprob changes for positive advantage samples
+        if not critic_only:
+            self._evaluate_positive_advantage_samples(flat_data)
+
         return stats
+
+    def _evaluate_positive_advantage_samples(self, flat_data: Dict[str, torch.Tensor],
+                                              max_samples: int = 50) -> None:
+        """
+        Evaluate logprob changes for samples with positive advantages.
+
+        If PPO is working correctly, positive advantage samples should have
+        INCREASED logprob after training (we want to increase probability of good actions).
+
+        Args:
+            flat_data: Flattened training data
+            max_samples: Maximum number of positive samples to evaluate
+        """
+        print(f"\n  🔍 Evaluating positive advantage samples...")
+
+        with torch.no_grad():
+            # Get advantages and find positive ones
+            advantages = flat_data['advantages']  # [total_samples, action_chunk]
+            mean_advantages = advantages.mean(dim=-1)  # [total_samples]
+
+            # Find indices of positive advantage samples
+            positive_mask = mean_advantages > 0
+            positive_indices = torch.where(positive_mask)[0]
+
+            if len(positive_indices) == 0:
+                print(f"    ⚠️ No positive advantage samples found!")
+                return
+
+            # Sample a subset for evaluation
+            n_positive = len(positive_indices)
+            n_eval = min(max_samples, n_positive)
+            eval_indices = positive_indices[torch.randperm(n_positive)[:n_eval]]
+
+            # Extract data for evaluation
+            eval_batch = {}
+            for key, value in flat_data.items():
+                if key == 'observation':
+                    eval_batch[key] = {k: v[eval_indices] for k, v in value.items()}
+                else:
+                    eval_batch[key] = value[eval_indices]
+
+            # Get old logprobs
+            old_logprobs = eval_batch['prev_logprobs']  # [n_eval, N, action_chunk, action_dim]
+            old_logprobs_avg = old_logprobs.mean(dim=1)  # [n_eval, action_chunk, action_dim]
+            old_logprobs_sum = old_logprobs_avg.sum(dim=-1)  # [n_eval, action_chunk]
+            old_logprobs_mean = old_logprobs_sum.mean(dim=-1)  # [n_eval]
+
+            # Forward pass to get new logprobs
+            policy_outputs = self.policy.default_forward(
+                data={
+                    'observation': eval_batch['observation'],
+                    'chains': eval_batch['chains'],
+                    'denoise_inds': eval_batch['denoise_inds'],
+                    'prev_logprobs': eval_batch['prev_logprobs']
+                },
+                compute_values=True
+            )
+
+            new_logprobs = policy_outputs['logprobs']  # [n_eval, action_chunk, action_dim]
+            new_logprobs_avg = new_logprobs.mean(dim=1)  # Average over denoising if needed
+            new_logprobs_sum = new_logprobs.sum(dim=-1)  # [n_eval, action_chunk]
+            new_logprobs_mean = new_logprobs_sum.mean(dim=-1)  # [n_eval]
+
+            # Calculate changes
+            logprob_diff = new_logprobs_mean - old_logprobs_mean  # [n_eval]
+            advantages_eval = mean_advantages[eval_indices]  # [n_eval]
+
+            # Statistics
+            increased = (logprob_diff > 0).float().mean().item()
+            mean_diff = logprob_diff.mean().item()
+            mean_adv = advantages_eval.mean().item()
+
+            # Ratio (importance sampling)
+            ratio = torch.exp(logprob_diff)
+            mean_ratio = ratio.mean().item()
+
+            print(f"    📊 Positive advantage samples ({n_eval}/{n_positive} evaluated):")
+            print(f"       - Mean advantage: {mean_adv:.4f}")
+            print(f"       - Old logprob mean: {old_logprobs_mean.mean().item():.4f}")
+            print(f"       - New logprob mean: {new_logprobs_mean.mean().item():.4f}")
+            print(f"       - Logprob diff (new - old): {mean_diff:.6f}")
+            print(f"       - % samples with increased logprob: {increased*100:.1f}%")
+            print(f"       - Mean ratio (π_new/π_old): {mean_ratio:.4f}")
+
+            # Detailed breakdown by advantage magnitude
+            high_adv_mask = advantages_eval > 1.0
+            if high_adv_mask.any():
+                high_adv_diff = logprob_diff[high_adv_mask].mean().item()
+                high_adv_increased = (logprob_diff[high_adv_mask] > 0).float().mean().item()
+                print(f"    📊 High advantage samples (adv > 1.0, n={high_adv_mask.sum().item()}):")
+                print(f"       - Logprob diff: {high_adv_diff:.6f}")
+                print(f"       - % increased: {high_adv_increased*100:.1f}%")
+
+            # Check if PPO is working as expected
+            if increased < 0.5:
+                print(f"    ⚠️ WARNING: Less than 50% of positive advantage samples have increased logprob!")
+                print(f"       This suggests PPO may not be learning correctly.")
+            elif increased > 0.7:
+                print(f"    ✅ Good: {increased*100:.1f}% of positive advantage samples have increased logprob.")
+
+            # Also check negative advantage samples
+            negative_mask = mean_advantages < 0
+            negative_indices = torch.where(negative_mask)[0]
+
+            if len(negative_indices) > 0:
+                n_negative = len(negative_indices)
+                n_eval_neg = min(max_samples, n_negative)
+                eval_indices_neg = negative_indices[torch.randperm(n_negative)[:n_eval_neg]]
+
+                # Extract negative samples
+                eval_batch_neg = {}
+                for key, value in flat_data.items():
+                    if key == 'observation':
+                        eval_batch_neg[key] = {k: v[eval_indices_neg] for k, v in value.items()}
+                    else:
+                        eval_batch_neg[key] = value[eval_indices_neg]
+
+                old_logprobs_neg = eval_batch_neg['prev_logprobs'].mean(dim=1).sum(dim=-1).mean(dim=-1)
+
+                policy_outputs_neg = self.policy.default_forward(
+                    data={
+                        'observation': eval_batch_neg['observation'],
+                        'chains': eval_batch_neg['chains'],
+                        'denoise_inds': eval_batch_neg['denoise_inds'],
+                        'prev_logprobs': eval_batch_neg['prev_logprobs']
+                    },
+                    compute_values=True
+                )
+
+                new_logprobs_neg = policy_outputs_neg['logprobs'].sum(dim=-1).mean(dim=-1)
+                logprob_diff_neg = new_logprobs_neg - old_logprobs_neg
+                decreased = (logprob_diff_neg < 0).float().mean().item()
+                mean_diff_neg = logprob_diff_neg.mean().item()
+                mean_adv_neg = mean_advantages[eval_indices_neg].mean().item()
+
+                print(f"    📊 Negative advantage samples ({n_eval_neg}/{n_negative} evaluated):")
+                print(f"       - Mean advantage: {mean_adv_neg:.4f}")
+                print(f"       - Logprob diff (new - old): {mean_diff_neg:.6f}")
+                print(f"       - % samples with decreased logprob: {decreased*100:.1f}%")
+
+                if decreased < 0.5:
+                    print(f"    ⚠️ WARNING: Less than 50% of negative advantage samples have decreased logprob!")
 
     def _compute_ppo_loss(self,
                          mini_batch: Dict[str, torch.Tensor],
