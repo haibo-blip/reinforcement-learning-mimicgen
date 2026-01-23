@@ -27,7 +27,7 @@ dataset_path: equi_diffpo/data/robomimic/datasets/${task_name}/${task_name}_voxe
 # Policy configuration (same as training config)
 policy:
   _target_: equi_diffpo.policy.maniflow.maniflow_pointcloud_rl_policy.ManiFlowRLPointcloudPolicy
-  checkpoint: data/outputs/2026.01.19/18.56.39_train_maniflow_pointcloud_nut_assembly_d0/checkpoints/epoch=00470.420.ckpt
+  checkpoint: data/outputs/2026.01.10/19.57.06_train_maniflow_pointcloud_nut_assembly_d0/checkpoints/epoch=0270-test_mean_score=0.190.ckpt
   # ManiFlow parameters
   horizon: ${horizon}
   n_action_steps: ${n_action_steps}
