@@ -81,7 +81,12 @@ class TrainManiFlowPointcloudWorkspace(BaseWorkspace):
 
             if ckpt_path.is_file():
                 print(f"Resuming from checkpoint {ckpt_path}")
-                self.load_checkpoint(path=ckpt_path)
+                # When loading from a specific checkpoint path, only load model weights
+                # (exclude optimizer, lr_scheduler which aren't created yet)
+                if OmegaConf.select(cfg, 'training.checkpoint_path') is not None:
+                    self.load_checkpoint(path=ckpt_path, exclude_keys=['optimizer', 'lr_scheduler'])
+                else:
+                    self.load_checkpoint(path=ckpt_path)
 
         # configure dataset
         dataset: BaseImageDataset
