@@ -161,7 +161,7 @@ class ManiFlowPPOTrainer:
         print(f"  - Device: {self.device}")
         print(f"  - Parameters: {sum(p.numel() for p in self.policy.parameters()):,}")
 
-        # 🔍 检查 visual encoder 是否被冻结
+        # 🔍 Check if visual encoder is frozen
         self._check_visual_encoder_frozen()
 
     def _build_optimizer(self) -> optim.Optimizer:
@@ -215,8 +215,8 @@ class ManiFlowPPOTrainer:
         return optimizer
 
     def _check_visual_encoder_frozen(self):
-        """检查 visual encoder 的冻结状态"""
-        print(f"\n🔍 Visual Encoder 冻结状态检查:")
+        """Check visual encoder freeze status"""
+        print(f"\n🔍 Visual Encoder Freeze Status Check:")
 
         if hasattr(self.policy, 'obs_encoder'):
             encoder = self.policy.obs_encoder
@@ -238,23 +238,23 @@ class ManiFlowPPOTrainer:
             print(f"  - Trainable params: {trainable_params:,} ({1-frozen_ratio:.1%})")
 
             if frozen_ratio > 0.99:
-                print(f"  ✅ Visual encoder 已冻结")
+                print(f"  ✅ Visual encoder is frozen")
             elif frozen_ratio < 0.01:
-                print(f"  ⚠️ Visual encoder 未冻结 (全部可训练)")
+                print(f"  ⚠️ Visual encoder not frozen (all trainable)")
             else:
-                print(f"  ⚠️ Visual encoder 部分冻结")
-                # 打印前几个可训练的参数
-                print(f"  可训练参数示例:")
+                print(f"  ⚠️ Visual encoder partially frozen")
+                # Print first few trainable parameters
+                print(f"  Trainable parameters examples:")
                 count = 0
                 for name, param in encoder.named_parameters():
                     if param.requires_grad and count < 5:
                         print(f"    - {name}: {param.shape}")
                         count += 1
         else:
-            print(f"  ⚠️ 未找到 obs_encoder")
+            print(f"  ⚠️ obs_encoder not found")
 
-        # 检查整体模型的参数分布
-        print(f"\n🔍 整体模型参数分布:")
+        # Check overall model parameter distribution
+        print(f"\n🔍 Overall Model Parameter Distribution:")
         total_all = sum(p.numel() for p in self.policy.parameters())
         trainable_all = sum(p.numel() for p in self.policy.parameters() if p.requires_grad)
         print(f"  - Total: {total_all:,}")

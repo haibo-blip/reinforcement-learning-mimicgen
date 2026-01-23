@@ -163,7 +163,7 @@ class RobomimicRLRunner(RobomimicImageRunner):
             leave=False, mininterval=self.tqdm_interval_sec)
 
         step_count = 0
-        # 步数固定，不检查 done（done 只用于 loss mask）
+        # Fixed number of steps, don't check done (done is only used for loss mask)
         while step_count < math.ceil(self.max_steps / 16):
             # Create obs dict
             np_obs_dict = dict(obs)
@@ -228,7 +228,7 @@ class RobomimicRLRunner(RobomimicImageRunner):
             prev_cumulative_rewards = cumulative_rewards.copy()
 
             # Generate done signal: success (cumulative_rewards >= 1) OR truncation (original done)
-            # 一旦 cumulative_rewards 变成 1，说明任务成功，应该视为 done
+            # Once cumulative_rewards becomes 1, task succeeded, should be treated as done
             success_done = cumulative_rewards >= 1.0  # [n_active_envs]
             truncation_done = done_array[:n_active_envs]  # [n_active_envs]
             individual_dones = np.logical_or(success_done, truncation_done).astype(np.float32)
@@ -286,13 +286,13 @@ class RobomimicRLRunner(RobomimicImageRunner):
         """
         Combine RL data from all environment chunks.
 
-        每个 chunk 先 stack (沿 step 维度)，再 concatenate (沿 env 维度)。
-        最终 shape: [n_steps, total_envs, ...]
+        Each chunk is first stacked (along step dimension), then concatenated (along env dimension).
+        Final shape: [n_steps, total_envs, ...]
         """
         if not chunk_data_list:
             return {}
 
-        total_steps = chunk_data_list[0]['n_steps']  # 所有 chunk 步数相同
+        total_steps = chunk_data_list[0]['n_steps']  # All chunks have the same number of steps
         total_envs = sum(chunk['n_active_envs'] for chunk in chunk_data_list)
 
         print(f"📊 Combining {len(chunk_data_list)} chunks: n_steps={total_steps}, total_envs={total_envs}")
@@ -339,7 +339,7 @@ class RobomimicRLRunner(RobomimicImageRunner):
         for key in obs_keys:
             obs_per_chunk = []
             for chunk in chunk_data_list:
-                # chunk['observations'] 是 list of dict，每个 dict 是一个 step
+                # chunk['observations'] is a list of dict, each dict is one step
                 obs_list = [step_obs[key] for step_obs in chunk['observations']]
                 stacked = np.stack(obs_list, axis=0)  # [n_steps, n_active_envs, ...]
                 obs_per_chunk.append(stacked)
