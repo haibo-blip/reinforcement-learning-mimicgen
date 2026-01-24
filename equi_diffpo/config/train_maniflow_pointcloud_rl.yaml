@@ -47,8 +47,8 @@ policy:
   language_conditioned: False
 
   # ManiFlow training parameters
-  flow_batch_ratio: 0.75
-  consistency_batch_ratio: 0.25
+  flow_batch_ratio: 0.9
+  consistency_batch_ratio: 0.1
   denoise_timesteps: 10
   sample_t_mode_flow: "beta"
   sample_t_mode_consistency: "discrete"

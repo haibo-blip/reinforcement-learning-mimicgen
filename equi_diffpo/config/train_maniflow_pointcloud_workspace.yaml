@@ -105,7 +105,6 @@ training:
   seed: 42
   debug: False
   resume: True
-  checkpoint_path: "data/outputs/2026.01.19/18.56.39_train_maniflow_pointcloud_nut_assembly_d0/checkpoints/epoch=00470.420.ckpt"  # Set path to load specific checkpoint, e.g., "data/outputs/.../epoch=00470.ckpt"
   lr_scheduler: cosine
   lr_warmup_steps: 500
   num_epochs: ${eval:'50000 / ${n_demo}'}
