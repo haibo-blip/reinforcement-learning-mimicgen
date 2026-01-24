@@ -120,6 +120,12 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
         if unexpected:
             print(f"⚠️  Unexpected keys (ignored): {unexpected}")
 
+        # Check if normalizer was loaded from checkpoint
+        normalizer_keys = [k for k in state_dict.keys() if k.startswith('normalizer.')]
+        normalizer_loaded_from_checkpoint = len(normalizer_keys) > 0
+    else:
+        normalizer_loaded_from_checkpoint = False
+
     # 3. Create RL-compatible environment runner from config
     # Use RobomimicRLRunner instead of regular RobomimicImageRunner
     env_runner_config = OmegaConf.to_container(cfg.task.env_runner, resolve=True)
@@ -128,13 +134,17 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
     env_runner_config = OmegaConf.create(env_runner_config)
     env_runner = hydra.utils.instantiate(env_runner_config, output_dir="./rl_outputs")
 
-    # 4. Set up normalizer (load from cache or dataset)
-    normalizer = get_or_create_normalizer(cfg)
-    if normalizer is not None:
-        policy.set_normalizer(normalizer)
-        print("✅ Loaded normalizer from dataset")
+    # 4. Set up normalizer - prefer checkpoint, fallback to dataset
+    if normalizer_loaded_from_checkpoint:
+        print("✅ Using normalizer from checkpoint (skipping dataset load)")
     else:
-        print("⚠️  No dataset config found - normalizer must be set manually")
+        # Only load dataset if normalizer not in checkpoint
+        normalizer = get_or_create_normalizer(cfg)
+        if normalizer is not None:
+            policy.set_normalizer(normalizer)
+            print("✅ Loaded normalizer from dataset")
+        else:
+            print("⚠️  No normalizer found - must be set manually")
 
     # 5. Create PPO config from hydra config - all parameters from rl_training
     rl_config = cfg.get('rl_training', {})
