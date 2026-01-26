@@ -41,6 +41,7 @@ class PPOConfig:
 
     # Critic warmup
     critic_warmup_rollouts: int = 0   # Number of rollouts to warmup critic before training actor
+    critic_warmup_epochs: int = 3     # Number of epochs per rollout during critic warmup
 
     # Learning rates
     learning_rate: float = 3e-4       # Actor learning rate
@@ -322,6 +323,7 @@ class ManiFlowPPOTrainer:
         Run PPO training on rollout batch following Pi0.5/RLinf pattern.
 
         Pi0.5 style: 1 epoch per rollout, no early stopping.
+        During critic warmup: multiple epochs (critic_warmup_epochs) for faster value learning.
 
         Args:
             rollout_batch: Collected rollout data with advantages and returns
@@ -330,9 +332,12 @@ class ManiFlowPPOTrainer:
         Returns:
             Training statistics
         """
+        # Determine number of epochs
         if critic_only:
-            print("🔥 Running critic warmup (value head only)...")
+            n_epochs = self.config.critic_warmup_epochs
+            print(f"🔥 Running critic warmup (value head only, {n_epochs} epochs)...")
         else:
+            n_epochs = 1
             print("🔥 Running PPO training (Pi0.5 style: 1 epoch, no early stop)...")
 
         # Reset debug counter for this rollout
@@ -361,55 +366,61 @@ class ManiFlowPPOTrainer:
         # Following RLinf pattern: Set policy to training mode only for gradient updates
         self.policy.train()
 
-        # Pi0.5 style: only 1 epoch, no early stopping
-        # Shuffle data
-        indices = torch.randperm(total_samples)
+        # Run for n_epochs (1 for normal PPO, multiple for critic warmup)
+        for epoch in range(n_epochs):
+            # Shuffle data each epoch
+            indices = torch.randperm(total_samples)
 
-        for start in range(0, total_samples, self.config.batch_size):
-            end = min(start + self.config.batch_size, total_samples)
-            batch_indices = indices[start:end]
+            for start in range(0, total_samples, self.config.batch_size):
+                end = min(start + self.config.batch_size, total_samples)
+                batch_indices = indices[start:end]
 
-            # Extract mini-batch (handle observation dict specially)
-            mini_batch = {}
-            for key, value in flat_data.items():
-                if key == 'observation':
-                    # value is a dict of tensors
-                    mini_batch[key] = {k: v[batch_indices] for k, v in value.items()}
-                else:
-                    mini_batch[key] = value[batch_indices]
+                # Extract mini-batch (handle observation dict specially)
+                mini_batch = {}
+                for key, value in flat_data.items():
+                    if key == 'observation':
+                        # value is a dict of tensors
+                        mini_batch[key] = {k: v[batch_indices] for k, v in value.items()}
+                    else:
+                        mini_batch[key] = value[batch_indices]
 
-            # Forward pass through policy
-            policy_outputs = self.policy.default_forward(
-                data={
-                    'observation': mini_batch['observation'],
-                    'chains': mini_batch['chains'],
-                    'denoise_inds': mini_batch['denoise_inds'],
-                    'prev_logprobs': mini_batch['prev_logprobs']
-                },
-                compute_values=True
-            )
+                # Forward pass through policy
+                policy_outputs = self.policy.default_forward(
+                    data={
+                        'observation': mini_batch['observation'],
+                        'chains': mini_batch['chains'],
+                        'denoise_inds': mini_batch['denoise_inds'],
+                        'prev_logprobs': mini_batch['prev_logprobs']
+                    },
+                    compute_values=True
+                )
 
-            # Compute losses
-            loss_dict = self._compute_ppo_loss(mini_batch, policy_outputs, critic_only=critic_only)
+                # Compute losses
+                loss_dict = self._compute_ppo_loss(mini_batch, policy_outputs, critic_only=critic_only)
 
-            # Backward pass
-            self.optimizer.zero_grad()
-            loss_dict['total_loss'].backward()
+                # Backward pass
+                self.optimizer.zero_grad()
+                loss_dict['total_loss'].backward()
 
-            # Gradient clipping
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                self.policy.parameters(),
-                self.config.max_grad_norm
-            )
+                # Gradient clipping
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.policy.parameters(),
+                    self.config.max_grad_norm
+                )
 
-            self.optimizer.step()
+                self.optimizer.step()
 
-            # Update statistics
-            for key in stats.keys():
-                if key in loss_dict:
-                    stats[key] += loss_dict[key].item()
+                # Update statistics
+                for key in stats.keys():
+                    if key in loss_dict:
+                        stats[key] += loss_dict[key].item()
 
-            num_updates += 1
+                num_updates += 1
+
+            # Log epoch progress for critic warmup
+            if critic_only and n_epochs > 1:
+                epoch_value_loss = stats['value_loss'] / num_updates if num_updates > 0 else 0
+                print(f"    Epoch {epoch + 1}/{n_epochs}: value_loss={epoch_value_loss:.6f}")
 
         # Average statistics
         for key in stats.keys():
@@ -425,7 +436,7 @@ class ManiFlowPPOTrainer:
         # Following RLinf pattern: Restore policy to eval mode after training
         self.policy.eval()
 
-        print(f"  ✅ PPO training completed: {num_updates} updates (1 epoch)")
+        print(f"  ✅ PPO training completed: {num_updates} updates ({n_epochs} epoch{'s' if n_epochs > 1 else ''})")
         print(f"    - Policy loss: {stats['policy_loss']:.6f}")
         print(f"    - Value loss: {stats['value_loss']:.6f}")
         print(f"    - Clip fraction: {stats['clip_fraction']:.2%}")

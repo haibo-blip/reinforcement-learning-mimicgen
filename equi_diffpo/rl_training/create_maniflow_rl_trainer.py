@@ -143,6 +143,7 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
 
         # Critic warmup
         critic_warmup_rollouts=rl_config.get('critic_warmup_rollouts', 0),
+        critic_warmup_epochs=rl_config.get('critic_warmup_epochs', 3),
     )
 
     # 6. Create advantage config - parameters from rl_training

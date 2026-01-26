@@ -190,7 +190,7 @@ def setup_output_directories(cfg: DictConfig):
     return output_dir
 
 
-@hydra.main(version_base=None, config_path="config", config_name="train_maniflow_pointcloud_rl")
+@hydra.main(version_base=None, config_path="equi_diffpo/config", config_name="train_maniflow_pointcloud_rl")
 def main(cfg: DictConfig) -> None:
     """Main training function."""
     try:

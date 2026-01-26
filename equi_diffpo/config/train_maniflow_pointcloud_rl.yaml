@@ -110,7 +110,8 @@ rl_training:
   eval_n_episodes: 50         # Episodes per evaluation
 
   # Critic warmup
-  critic_warmup_rollouts: 0
+  critic_warmup_rollouts: 4   # Number of rollouts to warmup critic before training actor
+  critic_warmup_epochs: 3     # Number of epochs per rollout during critic warmup
 
 # Training configuration
 training:
