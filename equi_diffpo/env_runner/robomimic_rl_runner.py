@@ -55,6 +55,7 @@ class RobomimicRLRunner(RobomimicImageRunner):
         Args:
             policy: ManiFlow RL policy that supports chains and RL methods
             n_episodes: Number of episodes to run (optional, defaults to len(env_init_fn_dills))
+                       If n_episodes > available init functions, cycles through them
 
         Returns:
             Dictionary with RL training data including chains, denoise_inds, etc.
@@ -67,11 +68,16 @@ class RobomimicRLRunner(RobomimicImageRunner):
 
         # Plan for rollout
         n_envs = len(self.env_fns)
-        n_inits = len(self.env_init_fn_dills) if n_episodes is None else min(n_episodes, len(self.env_init_fn_dills))
+        n_available = len(self.env_init_fn_dills)
+        n_inits = n_available if n_episodes is None else n_episodes
         n_chunks = math.ceil(n_inits / n_envs)
 
-        if n_episodes is not None:
-            print(f"  Using {n_inits} episodes (requested: {n_episodes}, available: {len(self.env_init_fn_dills)})")
+        # Check if we need to cycle through seeds
+        if n_episodes is not None and n_episodes > n_available:
+            n_cycles = math.ceil(n_episodes / n_available)
+            print(f"  Cycling through {n_available} seeds {n_cycles} times to get {n_episodes} episodes")
+        elif n_episodes is not None:
+            print(f"  Using {n_inits} episodes (requested: {n_episodes}, available: {n_available})")
 
         # Storage for RL data
         all_rl_data = []
@@ -85,7 +91,12 @@ class RobomimicRLRunner(RobomimicImageRunner):
             this_n_active_envs = end - start
             this_local_slice = slice(0, this_n_active_envs)
 
-            this_init_fns = self.env_init_fn_dills[this_global_slice]
+            # Get init functions with cycling support
+            # Use modulo to cycle through available init functions
+            this_init_fns = [
+                self.env_init_fn_dills[i % n_available]
+                for i in range(start, end)
+            ]
             n_diff = n_envs - len(this_init_fns)
             if n_diff > 0:
                 this_init_fns.extend([self.env_init_fn_dills[0]] * n_diff)
@@ -113,11 +124,12 @@ class RobomimicRLRunner(RobomimicImageRunner):
         # Combine RL data from all chunks
         combined_rl_data = self._combine_rl_chunks(all_rl_data)
 
-        # Standard logging (inherited from parent)
-        log_data = self._log_standard_metrics(all_video_paths, all_rewards, n_inits)
+        # Standard logging (inherited from parent) - only log first n_available for unique seeds
+        n_log = min(n_inits, n_available)
+        log_data = self._log_standard_metrics(all_video_paths[:n_log], all_rewards[:n_log], n_log)
 
         # Add RL-specific metrics (with video paths for RL-specific video logging)
-        log_data.update(self._log_rl_metrics(combined_rl_data, video_paths=all_video_paths))
+        log_data.update(self._log_rl_metrics(combined_rl_data, video_paths=all_video_paths[:n_log]))
 
         # Return combined data for RL training
         result = {
@@ -127,7 +139,7 @@ class RobomimicRLRunner(RobomimicImageRunner):
             'episode_rewards': all_rewards,
         }
 
-        print(f"✅ RL rollout collection completed: {len(combined_rl_data['observations'])} steps total")
+        print(f"✅ RL rollout collection completed: {combined_rl_data['total_steps']} steps, {n_inits} episodes")
 
         return result
 

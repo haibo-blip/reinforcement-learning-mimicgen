@@ -169,6 +169,8 @@ class ManiFlowPPOTrainer:
         print(f"🚀 ManiFlow PPO Trainer initialized")
         print(f"  - Device: {self.device}")
         print(f"  - Parameters: {sum(p.numel() for p in self.policy.parameters()):,}")
+        print(f"  - Train episodes per rollout: {self.config.train_n_episodes}")
+        print(f"  - Eval episodes: {self.config.eval_n_episodes}")
 
         # 🔍 Check if visual encoder is frozen
         self._check_visual_encoder_frozen()
@@ -280,8 +282,6 @@ class ManiFlowPPOTrainer:
 
         while self.global_step < self.config.total_timesteps:
             rollout_start_time = time.time()
-            if self.rollout_count % self.config.eval_interval == 0:
-                self._run_evaluation()
             # Stage 1: Collect rollouts
             print(f"\n📊 Rollout {self.rollout_count + 1} (Step {self.global_step:,}/{self.config.total_timesteps:,})")
             rollout_batch, video_paths = self.rollout_collector.collect_rollouts(
@@ -307,6 +307,8 @@ class ManiFlowPPOTrainer:
             rollout_time = time.time() - rollout_start_time
             self._log_training_metrics(training_stats, rollout_batch, rollout_time, video_paths)
             # Save checkpoint
+            if self.rollout_count % self.config.eval_interval == 0:
+                self._run_evaluation()
             if self.rollout_count % self.config.save_interval == 0:
                 self._save_checkpoint()
         total_time = time.time() - start_time
@@ -892,7 +894,7 @@ class ManiFlowPPOTrainer:
 
     def _run_evaluation(self) -> None:
         """Run evaluation episodes following SFT workspace pattern."""
-        print("🔍 Running evaluation...")
+        print(f"🔍 Running evaluation ({self.config.eval_n_episodes} episodes)...")
 
         # Set policy to evaluation mode
         self.policy.eval()

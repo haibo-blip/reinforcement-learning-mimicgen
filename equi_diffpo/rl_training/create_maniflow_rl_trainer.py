@@ -3,6 +3,7 @@
 Factory function to create ManiFlow RL trainer compatible with existing Hydra configs.
 """
 
+import math
 import hydra
 from omegaconf import OmegaConf
 from typing import Dict, Any, Optional
@@ -86,6 +87,18 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
     env_runner_config = OmegaConf.to_container(cfg.task.env_runner, resolve=True)
     env_runner_config['_target_'] = "equi_diffpo.env_runner.robomimic_rl_runner.RobomimicRLRunner"
     env_runner_config['collect_rl_data'] = True
+
+    # Set n_test = eval_n_episodes to ensure training uses the same seeds as evaluation
+    # Training will cycle through these seeds if train_n_episodes > eval_n_episodes
+    eval_n_episodes = rl_config.get('eval_n_episodes', 50)
+    train_n_episodes = rl_config.get('train_n_episodes', 50)
+    original_n_test = env_runner_config.get('n_test', 50)
+    if eval_n_episodes != original_n_test:
+        print(f"📊 Setting n_test to eval_n_episodes: {original_n_test} -> {eval_n_episodes}")
+        env_runner_config['n_test'] = eval_n_episodes
+    if train_n_episodes > eval_n_episodes:
+        print(f"📊 Training will cycle through {eval_n_episodes} seeds {math.ceil(train_n_episodes / eval_n_episodes)} times")
+
     env_runner_config = OmegaConf.create(env_runner_config)
     env_runner = hydra.utils.instantiate(env_runner_config, output_dir="./rl_outputs")
 
@@ -248,6 +261,8 @@ def create_maniflow_rl_trainer_simple(
 
         'rl_training': {
             'num_epochs': kwargs.get('num_epochs', 100),
+            'train_n_episodes': kwargs.get('train_n_episodes', 50),
+            'eval_n_episodes': kwargs.get('eval_n_episodes', 20),
             'ppo_trainer': {
                 'clip_ratio': kwargs.get('clip_ratio', 0.2),
                 'entropy_coef': kwargs.get('entropy_coef', 0.01),
