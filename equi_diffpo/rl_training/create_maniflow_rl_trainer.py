@@ -82,7 +82,10 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
     else:
         normalizer_loaded_from_checkpoint = False
 
-    # 3. Create RL-compatible environment runner from config
+    # 3. Get RL config early (needed for env_runner setup)
+    rl_config = cfg.get('rl_training', {})
+
+    # 4. Create RL-compatible environment runner from config
     # Use RobomimicRLRunner instead of regular RobomimicImageRunner
     env_runner_config = OmegaConf.to_container(cfg.task.env_runner, resolve=True)
     env_runner_config['_target_'] = "equi_diffpo.env_runner.robomimic_rl_runner.RobomimicRLRunner"
@@ -102,7 +105,7 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
     env_runner_config = OmegaConf.create(env_runner_config)
     env_runner = hydra.utils.instantiate(env_runner_config, output_dir="./rl_outputs")
 
-    # 4. Set up normalizer - prefer checkpoint, fallback to dataset
+    # 5. Set up normalizer - prefer checkpoint, fallback to dataset
     if normalizer_loaded_from_checkpoint:
         print("✅ Using normalizer from checkpoint (skipping dataset load)")
     else:
@@ -113,9 +116,7 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
         else:
             print("⚠️  No normalizer found - must be set manually")
 
-    # 5. Create PPO config from hydra config - all parameters from rl_training
-    rl_config = cfg.get('rl_training', {})
-
+    # 6. Create PPO config from hydra config - all parameters from rl_training
     ppo_config = PPOConfig(
         # Core training parameters
         total_timesteps=rl_config.get('total_timesteps', 1000000),
@@ -159,7 +160,7 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
         critic_warmup_epochs=rl_config.get('critic_warmup_epochs', 3),
     )
 
-    # 6. Create advantage config - parameters from rl_training
+    # 7. Create advantage config - parameters from rl_training
     advantage_config = AdvantageConfig(
         gamma=rl_config.get('gamma', 0.99),
         gae_lambda=rl_config.get('gae_lambda', 0.95),
@@ -167,7 +168,7 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
         normalize_advantages=True,
     )
 
-    # 7. Create RL trainer (rollout collector is created internally with correct config)
+    # 8. Create RL trainer (rollout collector is created internally with correct config)
     trainer = ManiFlowPPOTrainer(
         policy=policy,
         env_runner=env_runner,
