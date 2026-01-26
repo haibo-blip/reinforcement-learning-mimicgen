@@ -6,7 +6,7 @@ Collects rollout data for PPO training following RLinf pattern.
 
 import numpy as np
 import torch
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Union
 from dataclasses import dataclass
 import copy
 
@@ -302,18 +302,22 @@ class ManiFlowRolloutCollector:
             x_stds=x_stds,
         )
 
-    def collect_rollouts(self, num_episodes: Optional[int] = None, num_envs: Optional[int] = None) -> ManiFlowRolloutBatch:
+    def collect_rollouts(self, num_episodes: Optional[int] = None, num_envs: Optional[int] = None) -> Tuple[ManiFlowRolloutBatch, List[str]]:
         """
         Collect rollouts using the real environment runner following RLinf pattern.
 
         Args:
-            num_episodes: Number of episodes (not used - controlled by env runner config)
+            num_episodes: Number of episodes to collect (passed to env_runner)
             num_envs: Number of environments (not used - controlled by env runner config)
 
         Returns:
-            ManiFlowRolloutBatch: Collected rollout data for RL training
+            Tuple of:
+                - ManiFlowRolloutBatch: Collected rollout data for RL training
+                - List[str]: Video paths from rollout collection
         """
         print(f"🎲 Collecting rollouts using {type(self.env_runner).__name__}...")
+        if num_episodes is not None:
+            print(f"  Requested {num_episodes} episodes")
 
         # Following RLinf pattern: Keep policy in eval mode during rollout collection
         # Exploration is handled algorithmically via mode="train" parameter, not PyTorch train/eval
@@ -323,21 +327,25 @@ class ManiFlowRolloutCollector:
         # Check if we have the RL-compatible runner
         if hasattr(self.env_runner, 'run_rl'):
             # Use RL-specific method that collects step-by-step data
-            runner_results = self.env_runner.run_rl(self.policy)
+            runner_results = self.env_runner.run_rl(self.policy, n_episodes=num_episodes)
         else:
             # Fall back to regular run method (should work with eval_mode=False)
             print("⚠️  Using regular runner - ensure it's RobomimicRLRunner for RL data")
-            runner_results = self.env_runner.run(self.policy, eval_mode=False)
+            runner_results = self.env_runner.run(self.policy, eval_mode=False, n_episodes=num_episodes)
 
         # Convert results to our batch format
         rollout_batch = self.collect_rollouts_from_runner_results(runner_results)
+
+        # Extract video paths
+        video_paths = runner_results.get('video_paths', [])
 
         print(f"✅ Rollout collection completed:")
         print(f"  - Steps: {rollout_batch.n_chunk_steps}")
         print(f"  - Batch size: {rollout_batch.batch_size}")
         print(f"  - Actions: {rollout_batch.actions.shape}")
+        print(f"  - Video paths: {len(video_paths)}")
 
-        return rollout_batch
+        return rollout_batch, video_paths
 
     def collect_rollouts_with_runner(self) -> ManiFlowRolloutBatch:
         """

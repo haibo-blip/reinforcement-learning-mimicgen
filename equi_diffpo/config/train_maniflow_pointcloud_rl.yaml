@@ -40,32 +40,24 @@ policy:
   n_head: 8
   n_emb: 768
   visual_cond_len: 512
-  max_lang_cond_len: 1024
   qkv_bias: True
   qk_norm: True
   block_type: "DiTX"
   language_conditioned: False
 
-  # ManiFlow training parameters
-  flow_batch_ratio: 0.9
-  consistency_batch_ratio: 0.1
-  denoise_timesteps: 10
-  sample_t_mode_flow: "beta"
-  sample_t_mode_consistency: "discrete"
-  sample_dt_mode_consistency: "uniform"
-  sample_target_t_mode: "relative"
+  # Flow model parameters
   diffusion_timestep_embed_dim: 128
   diffusion_target_t_embed_dim: 128
+
+  # RL exploration noise
   noise_level: 0.1
-  # Noise annealing: start low, increase with training (like RLinf)
   noise_anneal: true
   noise_params: [0.1, 0.5, 500]  # [noise_start, noise_end, anneal_steps]
+
   # Point cloud encoder parameters
   encoder_type: "DP3Encoder"
   crop_shape: null
   encoder_output_dim: 128
-  pcd_input_channel: 6  # xyz + rgb
-  pcd_down_sample_num: 512
   shape_meta: ${shape_meta}
 
   use_pc_color: false
@@ -84,8 +76,8 @@ policy:
 rl_training:
   # Core training parameters
   total_timesteps: 1000000
-  num_envs: 14
-  batch_size: 32
+  num_envs: 16
+  batch_size: 64
 
   # PPO hyperparameters
   learning_rate: 1.0e-5      # Actor learning rate
@@ -108,6 +100,14 @@ rl_training:
   eval_interval: 3           # Eval every N rollouts
   log_interval: 10
   save_interval: 100
+
+  # Rollout video logging
+  rollout_video_interval: 20  # Upload rollout videos every N rollouts
+  n_rollout_videos: 4         # Number of videos to upload per interval
+
+  # Episode counts (separate for train rollouts and evaluation)
+  train_n_episodes: 500        # Episodes per training rollout
+  eval_n_episodes: 50         # Episodes per evaluation
 
   # Critic warmup
   critic_warmup_rollouts: 0

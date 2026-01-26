@@ -15,65 +15,20 @@ from equi_diffpo.env_runner.robomimic_rl_runner import RobomimicRLRunner
 from equi_diffpo.model.common.normalizer import LinearNormalizer
 
 
-def get_normalizer_cache_path(dataset_path: str, n_demo: int = 100) -> Path:
-    """Get the cache path for a normalizer based on dataset path."""
-    dataset_path = Path(dataset_path)
-    cache_dir = dataset_path.parent / "normalizer_cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_name = f"{dataset_path.stem}_n{n_demo}_normalizer.pt"
-    return cache_dir / cache_name
-
-
-def save_normalizer(normalizer: LinearNormalizer, cache_path: Path) -> None:
-    """Save normalizer to cache file."""
-    torch.save(normalizer.state_dict(), cache_path)
-    print(f"💾 Saved normalizer to: {cache_path}")
-
-
-def load_normalizer(cache_path: Path) -> Optional[LinearNormalizer]:
-    """Load normalizer from cache file if it exists."""
-    if not cache_path.exists():
-        return None
-    normalizer = LinearNormalizer()
-    normalizer.load_state_dict(torch.load(cache_path, weights_only=False))
-    print(f"⚡ Loaded cached normalizer from: {cache_path}")
-    return normalizer
-
-
-def get_or_create_normalizer(cfg: OmegaConf) -> Optional[LinearNormalizer]:
+def get_normalizer_from_dataset(cfg: OmegaConf) -> Optional[LinearNormalizer]:
     """
-    Get normalizer from cache or create from dataset.
+    Get normalizer from dataset (fallback when checkpoint doesn't have normalizer).
 
-    This avoids the slow 25+ minute dataset loading by caching the normalizer
-    after the first run.
+    Note: This is slow (~25 minutes) and should only be used when checkpoint
+    doesn't contain normalizer.
     """
     if not hasattr(cfg.task, 'dataset') or cfg.task.dataset is None:
         return None
 
-    # Get dataset path and n_demo for cache key
-    dataset_path = OmegaConf.select(cfg, 'task.dataset.dataset_path') or OmegaConf.select(cfg, 'dataset_path')
-    n_demo = OmegaConf.select(cfg, 'task.dataset.n_demo') or OmegaConf.select(cfg, 'n_demo') or 100
-
-    if not dataset_path:
-        return None
-
-    # Check for cached normalizer
-    cache_path = get_normalizer_cache_path(dataset_path, n_demo)
-    normalizer = load_normalizer(cache_path)
-
-    if normalizer is not None:
-        return normalizer
-
-    # No cache found - need to load dataset (slow)
-    print(f"⏳ No cached normalizer found. Loading dataset (this may take ~25 minutes)...")
-    print(f"   After this, subsequent runs will use the cached normalizer.")
-
+    print(f"⏳ Loading normalizer from dataset (this may take ~25 minutes)...")
     dataset = hydra.utils.instantiate(cfg.task.dataset)
     normalizer = dataset.get_normalizer()
-
-    # Save to cache for future runs
-    save_normalizer(normalizer, cache_path)
-
+    print(f"✅ Normalizer loaded from dataset")
     return normalizer
 
 
@@ -139,10 +94,9 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
         print("✅ Using normalizer from checkpoint (skipping dataset load)")
     else:
         # Only load dataset if normalizer not in checkpoint
-        normalizer = get_or_create_normalizer(cfg)
+        normalizer = get_normalizer_from_dataset(cfg)
         if normalizer is not None:
             policy.set_normalizer(normalizer)
-            print("✅ Loaded normalizer from dataset")
         else:
             print("⚠️  No normalizer found - must be set manually")
 
@@ -174,6 +128,14 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
         save_interval=rl_config.get('save_interval', 100),
         wandb_project=cfg.get('logging', {}).get('project', 'maniflow_rl'),
         wandb_run_name=cfg.get('logging', {}).get('name', 'ppo_training'),
+
+        # Rollout video logging
+        rollout_video_interval=rl_config.get('rollout_video_interval', 20),
+        n_rollout_videos=rl_config.get('n_rollout_videos', 4),
+
+        # Episode counts
+        train_n_episodes=rl_config.get('train_n_episodes', 50),
+        eval_n_episodes=rl_config.get('eval_n_episodes', 50),
 
         # Environment parameters (from task config)
         action_chunk_size=cfg.get('n_action_steps', 8),
@@ -275,11 +237,11 @@ def create_maniflow_rl_trainer_simple(
                 'n_envs': kwargs.get('n_envs', 8),
                 'collect_rl_data': True,
             },
+            # Dataset config only needed if normalizer not in checkpoint
             'dataset': {
                 '_target_': 'equi_diffpo.dataset.robomimic_replay_point_cloud_dataset.RobomimicReplayPointCloudDataset',
                 'dataset_path': dataset_path or f"data/robomimic/datasets/{task_name}/{task_name}_voxel_abs.hdf5",
                 'horizon': kwargs.get('horizon', 16),
-                'n_demo': kwargs.get('n_demo', 100),
             } if dataset_path else None
         },
 

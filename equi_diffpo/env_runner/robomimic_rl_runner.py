@@ -48,12 +48,13 @@ class RobomimicRLRunner(RobomimicImageRunner):
         self.collect_rl_data = collect_rl_data
         print(f"🎲 RobomimicRLRunner initialized (RL data collection: {collect_rl_data})")
 
-    def run_rl(self, policy: ManiFlowRLPointcloudPolicy) -> Dict[str, Any]:
+    def run_rl(self, policy: ManiFlowRLPointcloudPolicy, n_episodes: Optional[int] = None) -> Dict[str, Any]:
         """
         Run rollout collection for RL training with step-by-step data storage.
 
         Args:
             policy: ManiFlow RL policy that supports chains and RL methods
+            n_episodes: Number of episodes to run (optional, defaults to len(env_init_fn_dills))
 
         Returns:
             Dictionary with RL training data including chains, denoise_inds, etc.
@@ -66,8 +67,11 @@ class RobomimicRLRunner(RobomimicImageRunner):
 
         # Plan for rollout
         n_envs = len(self.env_fns)
-        n_inits = len(self.env_init_fn_dills)
+        n_inits = len(self.env_init_fn_dills) if n_episodes is None else min(n_episodes, len(self.env_init_fn_dills))
         n_chunks = math.ceil(n_inits / n_envs)
+
+        if n_episodes is not None:
+            print(f"  Using {n_inits} episodes (requested: {n_episodes}, available: {len(self.env_init_fn_dills)})")
 
         # Storage for RL data
         all_rl_data = []
@@ -463,12 +467,13 @@ class RobomimicRLRunner(RobomimicImageRunner):
 
         return log_data
 
-    def run_eval(self, policy: ManiFlowRLPointcloudPolicy) -> Dict[str, Any]:
+    def run_eval(self, policy: ManiFlowRLPointcloudPolicy, n_episodes: Optional[int] = None) -> Dict[str, Any]:
         """
         Run evaluation rollout without noise for clean policy evaluation.
 
         Args:
             policy: ManiFlow RL policy
+            n_episodes: Number of episodes to run (optional, defaults to len(env_init_fn_dills))
 
         Returns:
             Dictionary with evaluation metrics (no RL training data)
@@ -481,8 +486,11 @@ class RobomimicRLRunner(RobomimicImageRunner):
 
         # Plan for rollout
         n_envs = len(self.env_fns)
-        n_inits = len(self.env_init_fn_dills)
+        n_inits = len(self.env_init_fn_dills) if n_episodes is None else min(n_episodes, len(self.env_init_fn_dills))
         n_chunks = math.ceil(n_inits / n_envs)
+
+        if n_episodes is not None:
+            print(f"  Using {n_inits} episodes (requested: {n_episodes}, available: {len(self.env_init_fn_dills)})")
 
         # Storage for evaluation data
         all_video_paths = [None] * n_inits
@@ -595,7 +603,7 @@ class RobomimicRLRunner(RobomimicImageRunner):
 
         pbar.close()
 
-    def run(self, policy: BaseImagePolicy, eval_mode: bool = False):
+    def run(self, policy: BaseImagePolicy, eval_mode: bool = False, n_episodes: Optional[int] = None):
         """
         Override run method to handle both standard and RL policies.
 
@@ -603,14 +611,15 @@ class RobomimicRLRunner(RobomimicImageRunner):
             policy: The policy to run
             eval_mode: If True, run in evaluation mode (no exploration noise)
                       If False, run in training mode (with exploration noise)
+            n_episodes: Number of episodes to run (optional, defaults to len(env_init_fn_dills))
         """
         if isinstance(policy, ManiFlowRLPointcloudPolicy):
             if eval_mode:
-                return self.run_eval(policy)
+                return self.run_eval(policy, n_episodes=n_episodes)
             elif self.collect_rl_data:
-                return self.run_rl(policy)
+                return self.run_rl(policy, n_episodes=n_episodes)
             else:
-                return self.run_eval(policy)  # Standard rollout without RL data collection
+                return self.run_eval(policy, n_episodes=n_episodes)  # Standard rollout without RL data collection
         else:
             # Fall back to parent class behavior for non-RL policies
             return super().run(policy)

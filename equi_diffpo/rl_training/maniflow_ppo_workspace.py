@@ -59,6 +59,14 @@ class PPOConfig:
     wandb_project: str = "maniflow_rl"
     wandb_run_name: str = "ppo_training"
 
+    # Rollout video logging
+    rollout_video_interval: int = 20  # Upload rollout videos every N rollouts
+    n_rollout_videos: int = 4         # Number of videos to upload per interval
+
+    # Episode counts (separate for train rollouts and evaluation)
+    train_n_episodes: int = 50        # Episodes per training rollout
+    eval_n_episodes: int = 50         # Episodes per evaluation
+
     # Paths
     save_path: str = "checkpoints/maniflow_ppo"
     log_path: str = "logs/maniflow_ppo"
@@ -275,8 +283,8 @@ class ManiFlowPPOTrainer:
                 self._run_evaluation()
             # Stage 1: Collect rollouts
             print(f"\n📊 Rollout {self.rollout_count + 1} (Step {self.global_step:,}/{self.config.total_timesteps:,})")
-            rollout_batch = self.rollout_collector.collect_rollouts(
-                num_episodes=None,  # Collect by steps, not episodes
+            rollout_batch, video_paths = self.rollout_collector.collect_rollouts(
+                num_episodes=self.config.train_n_episodes,
                 num_envs=self.config.num_envs
             )
 
@@ -296,7 +304,7 @@ class ManiFlowPPOTrainer:
 
             # Metrics and logging
             rollout_time = time.time() - rollout_start_time
-            self._log_training_metrics(training_stats, rollout_batch, rollout_time)
+            self._log_training_metrics(training_stats, rollout_batch, rollout_time, video_paths)
             # Save checkpoint
             if self.rollout_count % self.config.save_interval == 0:
                 self._save_checkpoint()
@@ -781,7 +789,8 @@ class ManiFlowPPOTrainer:
     def _log_training_metrics(self,
                             training_stats: Dict[str, float],
                             rollout_batch: ManiFlowRolloutBatch,
-                            rollout_time: float) -> None:
+                            rollout_time: float,
+                            video_paths: List[str] = None) -> None:
         """Log training metrics."""
 
         # Calculate rollout statistics
@@ -818,7 +827,7 @@ class ManiFlowPPOTrainer:
 
         # Wandb logging
         if self.use_wandb:
-            wandb.log({
+            log_dict = {
                 'rollout/mean_reward': mean_reward,
                 'rollout/total_reward': total_reward,
                 'rollout/episode_length': mean_episode_length,
@@ -835,7 +844,18 @@ class ManiFlowPPOTrainer:
                 'train/rollout_count': self.rollout_count,
                 'perf/fps': fps,
                 'perf/rollout_time': rollout_time,
-            }, step=self.global_step)
+            }
+
+            # Upload rollout videos periodically
+            if (video_paths is not None and
+                self.rollout_count % self.config.rollout_video_interval == 0):
+                n_videos = min(self.config.n_rollout_videos, len(video_paths))
+                print(f"📹 Uploading {n_videos} rollout videos to wandb...")
+                for i in range(n_videos):
+                    if video_paths[i] is not None:
+                        log_dict[f'rollout/video_{i}'] = wandb.Video(video_paths[i])
+
+            wandb.log(log_dict, step=self.global_step)
 
     def _save_checkpoint(self, final: bool = False) -> None:
         """Save training checkpoint."""
@@ -871,7 +891,12 @@ class ManiFlowPPOTrainer:
         with torch.no_grad():
             # Run evaluation using the same env_runner as training but in eval mode
             # Use eval_mode=True to disable exploration noise
-            eval_runner_log = self.env_runner.run(self.policy, eval_mode=True)
+            # Use eval_n_episodes for number of evaluation episodes
+            eval_runner_log = self.env_runner.run(
+                self.policy,
+                eval_mode=True,
+                n_episodes=self.config.eval_n_episodes
+            )
 
             # Add eval prefix to all metrics from runner
             for key, value in eval_runner_log.items():

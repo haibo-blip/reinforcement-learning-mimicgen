@@ -130,14 +130,6 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
                  safe_get_logprob: bool = False,
                  joint_logprob: bool = False,  # like Pi0.5
                  freeze_encoder: bool = True,  # Freeze visual encoder during RL training
-                 # Flow training parameters (kept for compatibility)
-                 flow_batch_ratio: float = 0.75,
-                 consistency_batch_ratio: float = 0.25,
-                 denoise_timesteps: int = 10,
-                 sample_t_mode_flow: str = "beta",
-                 sample_t_mode_consistency: str = "discrete",
-                 sample_dt_mode_consistency: str = "uniform",
-                 sample_target_t_mode: str = "relative",
                  **kwargs):
         super().__init__()
 
@@ -262,15 +254,6 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
 
         # RL training mode control (like Pi0.5)
         self._training_mode = True  # True for train, False for eval
-
-        # Flow parameters (kept for training compatibility)
-        self.flow_batch_ratio = flow_batch_ratio
-        self.consistency_batch_ratio = consistency_batch_ratio
-        self.denoise_timesteps = denoise_timesteps
-        self.sample_t_mode_flow = sample_t_mode_flow
-        self.sample_t_mode_consistency = sample_t_mode_consistency
-        self.sample_dt_mode_consistency = sample_dt_mode_consistency
-        self.sample_target_t_mode = sample_target_t_mode
 
         cprint(f"[ManiFlowRLPointcloudPolicy] Initialized with:", "yellow")
         cprint(f"  - noise_method: {self.noise_method}", "yellow")
