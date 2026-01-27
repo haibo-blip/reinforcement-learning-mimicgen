@@ -108,7 +108,7 @@ rl_training:
   n_rollout_videos: 4         # Number of videos to upload per interval
 
   # Episode counts (separate for train rollouts and evaluation)
-  train_n_episodes: 16        # Episodes per training rollout
+  train_n_episodes: 500        # Episodes per training rollout
   eval_n_episodes: 50         # Episodes per evaluation
 
   # Critic warmup
