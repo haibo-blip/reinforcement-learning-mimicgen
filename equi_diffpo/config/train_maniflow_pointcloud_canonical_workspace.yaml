@@ -66,6 +66,7 @@ policy:
 
   # Canonicalization for SE(3) symmetry
   use_canonicalization: true
+  canonicalization_mode: "se3"  # "se3" (rotation+translation) or "translation_only"
 
   pointcloud_encoder_cfg:
     in_channels: 6

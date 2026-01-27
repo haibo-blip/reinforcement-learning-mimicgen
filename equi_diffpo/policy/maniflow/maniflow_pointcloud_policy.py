@@ -49,6 +49,7 @@ class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
             sample_target_t_mode="relative", # relative, absolute
             # canonicalization for SE(3) symmetry
             use_canonicalization=False,
+            canonicalization_mode="se3",  # "se3" (rotation+translation) or "translation_only"
             **kwargs):
         super().__init__()
 
@@ -139,10 +140,14 @@ class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
 
         # Canonicalization for SE(3) symmetry
         self.use_canonicalization = use_canonicalization
+        self.canonicalization_mode = canonicalization_mode
         if self.use_canonicalization:
-            self.quat_to_matrix = RotationTransformer('quaternion', 'matrix')
-            self.rot6d_to_matrix = RotationTransformer('rotation_6d', 'matrix')
-            self.matrix_to_rot6d = RotationTransformer('matrix', 'rotation_6d')
+            if self.canonicalization_mode == "se3":
+                # Full SE(3): need quaternion and rotation transformers
+                self.quat_to_matrix = RotationTransformer('quaternion', 'matrix')
+                self.rot6d_to_matrix = RotationTransformer('rotation_6d', 'matrix')
+                self.matrix_to_rot6d = RotationTransformer('matrix', 'rotation_6d')
+            # translation_only: no rotation transformers needed
 
         cprint(f"[ManiFlowTransformerPointcloudPolicy] Initialized with parameters:", "yellow")
         cprint(f"  - horizon: {self.horizon}", "yellow")
@@ -157,6 +162,7 @@ class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
         cprint(f"  - sample_dt_mode_consistency: {self.sample_dt_mode_consistency}", "yellow")
         cprint(f"  - sample_target_t_mode: {self.sample_target_t_mode}", "yellow")
         cprint(f"  - use_canonicalization: {self.use_canonicalization}", "yellow")
+        cprint(f"  - canonicalization_mode: {self.canonicalization_mode}", "yellow")
 
         print_params(self)
 
@@ -173,16 +179,20 @@ class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
             T_inv: [B, 4, 4] inverse of T
         """
         # Get gripper pose from the latest observation step
-        eef_pos = obs_dict['robot0_eef_pos'][:, -1, :]    # [B, 3]
-        eef_quat = obs_dict['robot0_eef_quat'][:, -1, :]  # [B, 4] xyzw format
+        eef_pos = obs_dict['robot0_eef_pos'][:, -1, :]  # [B, 3]
 
         B = eef_pos.shape[0]
         device = eef_pos.device
         dtype = eef_pos.dtype
 
-        # xyzw -> wxyz for pytorch3d
-        quat_wxyz = eef_quat[..., [3, 0, 1, 2]]
-        R = self.quat_to_matrix.forward(quat_wxyz)  # [B, 3, 3]
+        if self.canonicalization_mode == "se3":
+            # Full SE(3): use rotation from quaternion
+            eef_quat = obs_dict['robot0_eef_quat'][:, -1, :]  # [B, 4] xyzw format
+            quat_wxyz = eef_quat[..., [3, 0, 1, 2]]  # xyzw -> wxyz for pytorch3d
+            R = self.quat_to_matrix.forward(quat_wxyz)  # [B, 3, 3]
+        else:
+            # translation_only: R = Identity
+            R = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(B, -1, -1)
 
         # Build 4x4 transformation matrix
         T = torch.eye(4, device=device, dtype=dtype).unsqueeze(0).expand(B, -1, -1).clone()
@@ -232,13 +242,17 @@ class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
         R_inv = T_inv[:, :3, :3]    # [B, 3, 3]
         t_inv = T_inv[:, :3, 3]     # [B, 3]
 
-        # Position: rotate + translate (absolute action)
+        # Position: rotate + translate (for translation_only, R_inv=I so this is just pos + t_inv)
         pos_canonical = torch.einsum('bij,btj->bti', R_inv, pos) + t_inv[:, None, :]
 
-        # Rotation: rot6d -> matrix -> R_inv @ R -> rot6d
-        R_action = self.rot6d_to_matrix.forward(rot6d)  # [B, T, 3, 3]
-        R_canonical = torch.einsum('bij,btjk->btik', R_inv, R_action)
-        rot6d_canonical = self.matrix_to_rot6d.forward(R_canonical)  # [B, T, 6]
+        if self.canonicalization_mode == "se3":
+            # Rotation: rot6d -> matrix -> R_inv @ R -> rot6d
+            R_action = self.rot6d_to_matrix.forward(rot6d)  # [B, T, 3, 3]
+            R_canonical = torch.einsum('bij,btjk->btik', R_inv, R_action)
+            rot6d_canonical = self.matrix_to_rot6d.forward(R_canonical)  # [B, T, 6]
+        else:
+            # translation_only: rotation unchanged
+            rot6d_canonical = rot6d
 
         return torch.cat([pos_canonical, rot6d_canonical, gripper], dim=-1)
 
@@ -260,13 +274,17 @@ class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
         R = T[:, :3, :3]  # [B, 3, 3]
         t = T[:, :3, 3]   # [B, 3]
 
-        # Position: rotate + translate
+        # Position: rotate + translate (for translation_only, R=I so this is just pos + t)
         pos_world = torch.einsum('bij,btj->bti', R, pos) + t[:, None, :]
 
-        # Rotation: R @ R_canonical
-        R_canonical = self.rot6d_to_matrix.forward(rot6d)  # [B, T, 3, 3]
-        R_world = torch.einsum('bij,btjk->btik', R, R_canonical)
-        rot6d_world = self.matrix_to_rot6d.forward(R_world)  # [B, T, 6]
+        if self.canonicalization_mode == "se3":
+            # Rotation: R @ R_canonical
+            R_canonical = self.rot6d_to_matrix.forward(rot6d)  # [B, T, 3, 3]
+            R_world = torch.einsum('bij,btjk->btik', R, R_canonical)
+            rot6d_world = self.matrix_to_rot6d.forward(R_world)  # [B, T, 6]
+        else:
+            # translation_only: rotation unchanged
+            rot6d_world = rot6d
 
         return torch.cat([pos_world, rot6d_world, gripper], dim=-1)
 
