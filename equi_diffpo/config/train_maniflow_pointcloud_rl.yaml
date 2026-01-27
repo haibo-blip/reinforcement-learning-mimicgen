@@ -52,7 +52,7 @@ policy:
   # RL exploration noise
   noise_level: 0.1
   noise_anneal: true
-  noise_params: [0.1, 0.5, 500]  # [noise_start, noise_end, anneal_steps]
+  noise_params: [0.1, 0.5, 100]  # [noise_start, noise_end, anneal_steps]
 
   # Point cloud encoder parameters
   encoder_type: "DP3Encoder"
