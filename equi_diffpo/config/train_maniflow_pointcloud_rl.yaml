@@ -77,7 +77,8 @@ rl_training:
   # Core training parameters
   total_timesteps: 1000000
   num_envs: 16
-  batch_size: 64
+  batch_size: 32
+  gradient_accumulate_every: 64  # Effective batch = 32 * 64 = 2048
 
   # PPO hyperparameters
   learning_rate: 1.0e-5      # Actor learning rate

@@ -30,7 +30,8 @@ class PPOConfig:
     # Training
     total_timesteps: int = 1000000
     num_envs: int = 8
-    batch_size: int = 512             # Minibatch size for training
+    batch_size: int = 32              # Minibatch size for training
+    gradient_accumulate_every: int = 64  # Accumulate gradients (effective batch = batch_size * this)
     max_grad_norm: float = 0.5        # Gradient clipping
 
     # PPO parameters
@@ -81,6 +82,8 @@ class PPOConfig:
         print(f"  - Total timesteps: {self.total_timesteps:,}")
         print(f"  - Num envs: {self.num_envs}")
         print(f"  - Batch size: {self.batch_size}")
+        print(f"  - Gradient accumulate: {self.gradient_accumulate_every}")
+        print(f"  - Effective batch size: {self.batch_size * self.gradient_accumulate_every}")
         print(f"  - Actor LR: {self.learning_rate}, Critic LR: {self.value_lr}")
         print(f"  - Clip range: {self.clip_range}")
 
@@ -327,6 +330,8 @@ class ManiFlowPPOTrainer:
         Pi0.5 style: 1 epoch per rollout, no early stopping.
         During critic warmup: multiple epochs (critic_warmup_epochs) for faster value learning.
 
+        Uses gradient accumulation and keeps data on CPU to reduce GPU memory usage.
+
         Args:
             rollout_batch: Collected rollout data with advantages and returns
             critic_only: If True, only train critic (value head), skip actor updates
@@ -345,12 +350,18 @@ class ManiFlowPPOTrainer:
         # Reset debug counter for this rollout
         self._debug_counter = 0
 
-        # Convert to torch
-        torch_batch = rollout_batch.to_torch(self.device)
+        # Keep data on CPU to reduce GPU memory, only move minibatches to GPU
+        torch_batch = rollout_batch.to_torch(torch.device('cpu'))
 
         # Flatten batch dimensions for training
         flat_data = self._flatten_batch_data(torch_batch)
         total_samples = flat_data['advantages'].shape[0]
+
+        # Gradient accumulation config
+        accumulate_steps = self.config.gradient_accumulate_every
+        effective_batch_size = self.config.batch_size * accumulate_steps
+        print(f"  📊 Training samples: {total_samples}, batch: {self.config.batch_size}, "
+              f"accumulate: {accumulate_steps}, effective batch: {effective_batch_size}")
 
         # Training statistics
         stats = {
@@ -363,28 +374,30 @@ class ManiFlowPPOTrainer:
             'explained_variance': 0.0,
         }
 
-        num_updates = 0
+        num_updates = 0  # Number of optimizer steps
+        num_minibatches = 0  # Number of forward/backward passes
 
         # Following RLinf pattern: Set policy to training mode only for gradient updates
         self.policy.train()
+
+        # Gradient accumulation state (persists across epochs)
+        self.optimizer.zero_grad()
+        accumulated_count = 0
+        accumulated_samples = 0  # Track actual samples for proper weighting
 
         # Run for n_epochs (1 for normal PPO, multiple for critic warmup)
         for epoch in range(n_epochs):
             # Shuffle data each epoch
             indices = torch.randperm(total_samples)
+            epoch_minibatches = 0
 
             for start in range(0, total_samples, self.config.batch_size):
                 end = min(start + self.config.batch_size, total_samples)
                 batch_indices = indices[start:end]
+                actual_batch_size = batch_indices.shape[0]
 
-                # Extract mini-batch (handle observation dict specially)
-                mini_batch = {}
-                for key, value in flat_data.items():
-                    if key == 'observation':
-                        # value is a dict of tensors
-                        mini_batch[key] = {k: v[batch_indices] for k, v in value.items()}
-                    else:
-                        mini_batch[key] = value[batch_indices]
+                # Extract mini-batch and move to GPU (data stays on CPU)
+                mini_batch = self._extract_minibatch_to_device(flat_data, batch_indices)
 
                 # Forward pass through policy
                 policy_outputs = self.policy.default_forward(
@@ -400,33 +413,57 @@ class ManiFlowPPOTrainer:
                 # Compute losses
                 loss_dict = self._compute_ppo_loss(mini_batch, policy_outputs, critic_only=critic_only)
 
-                # Backward pass
-                self.optimizer.zero_grad()
-                loss_dict['total_loss'].backward()
+                # Scale loss by actual batch size relative to expected effective batch
+                # This handles partial batches correctly:
+                # - Full batch (32): weight = 32 / (32 * 64) = 1/64
+                # - Partial batch (10): weight = 10 / (32 * 64) = 10/2048
+                weight = actual_batch_size / (self.config.batch_size * accumulate_steps)
+                scaled_loss = loss_dict['total_loss'] * weight
+                scaled_loss.backward()
 
-                # Gradient clipping
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    self.policy.parameters(),
-                    self.config.max_grad_norm
-                )
+                accumulated_count += 1
+                accumulated_samples += actual_batch_size
+                num_minibatches += 1
+                epoch_minibatches += 1
 
-                self.optimizer.step()
-
-                # Update statistics
+                # Update statistics (use unscaled loss for logging)
                 for key in stats.keys():
                     if key in loss_dict:
                         stats[key] += loss_dict[key].item()
 
-                num_updates += 1
+                # Perform optimizer step when accumulated enough gradients
+                if accumulated_count >= accumulate_steps:
+                    # Gradient clipping
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        self.policy.parameters(),
+                        self.config.max_grad_norm
+                    )
+
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
+                    num_updates += 1
+                    accumulated_count = 0
+                    accumulated_samples = 0
 
             # Log epoch progress for critic warmup
             if critic_only and n_epochs > 1:
-                epoch_value_loss = stats['value_loss'] / num_updates if num_updates > 0 else 0
-                print(f"    Epoch {epoch + 1}/{n_epochs}: value_loss={epoch_value_loss:.6f}")
+                epoch_value_loss = stats['value_loss'] / num_minibatches if num_minibatches > 0 else 0
+                print(f"    Epoch {epoch + 1}/{n_epochs}: value_loss={epoch_value_loss:.6f}, minibatches={epoch_minibatches}")
 
-        # Average statistics
+        # Handle remaining gradients after all epochs complete
+        if accumulated_count > 0:
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.policy.parameters(),
+                self.config.max_grad_norm
+            )
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+            num_updates += 1
+            print(f"  📝 Final step with {accumulated_count} minibatches ({accumulated_samples} samples)")
+
+        # Average statistics (by num_minibatches since stats are accumulated per minibatch)
         for key in stats.keys():
-            stats[key] /= max(num_updates, 1)
+            stats[key] /= max(num_minibatches, 1)
 
         # Update learning rate
         if self.lr_scheduler is not None:
@@ -438,7 +475,7 @@ class ManiFlowPPOTrainer:
         # Following RLinf pattern: Restore policy to eval mode after training
         self.policy.eval()
 
-        print(f"  ✅ PPO training completed: {num_updates} updates ({n_epochs} epoch{'s' if n_epochs > 1 else ''})")
+        print(f"  ✅ PPO training completed: {num_updates} optimizer steps, {num_minibatches} minibatches ({n_epochs} epoch{'s' if n_epochs > 1 else ''})")
         print(f"    - Policy loss: {stats['policy_loss']:.6f}")
         print(f"    - Value loss: {stats['value_loss']:.6f}")
         print(f"    - Clip fraction: {stats['clip_fraction']:.2%}")
@@ -458,13 +495,13 @@ class ManiFlowPPOTrainer:
         INCREASED logprob after training (we want to increase probability of good actions).
 
         Args:
-            flat_data: Flattened training data
+            flat_data: Flattened training data (on CPU)
             max_samples: Maximum number of positive samples to evaluate
         """
         print(f"\n  🔍 Evaluating positive advantage samples...")
 
         with torch.no_grad():
-            # Get advantages and find positive ones
+            # Get advantages and find positive ones (data is on CPU)
             advantages = flat_data['advantages']  # [total_samples, action_chunk]
             mean_advantages = advantages.mean(dim=-1)  # [total_samples]
 
@@ -495,13 +532,8 @@ class ManiFlowPPOTrainer:
             n_eval = min(max_samples, n_positive)
             eval_indices = positive_indices[torch.randperm(n_positive)[:n_eval]]
 
-            # Extract data for evaluation
-            eval_batch = {}
-            for key, value in flat_data.items():
-                if key == 'observation':
-                    eval_batch[key] = {k: v[eval_indices] for k, v in value.items()}
-                else:
-                    eval_batch[key] = value[eval_indices]
+            # Extract data for evaluation and move to GPU
+            eval_batch = self._extract_minibatch_to_device(flat_data, eval_indices)
 
             # Get old logprobs: [n_eval, N, action_chunk, action_dim]
             old_logprobs = eval_batch['prev_logprobs']
@@ -572,13 +604,8 @@ class ManiFlowPPOTrainer:
                 n_eval_neg = min(max_samples, n_negative)
                 eval_indices_neg = negative_indices[torch.randperm(n_negative)[:n_eval_neg]]
 
-                # Extract negative samples
-                eval_batch_neg = {}
-                for key, value in flat_data.items():
-                    if key == 'observation':
-                        eval_batch_neg[key] = {k: v[eval_indices_neg] for k, v in value.items()}
-                    else:
-                        eval_batch_neg[key] = value[eval_indices_neg]
+                # Extract negative samples and move to GPU
+                eval_batch_neg = self._extract_minibatch_to_device(flat_data, eval_indices_neg)
 
                 old_logprobs_neg = eval_batch_neg['prev_logprobs'].mean(dim=1).sum(dim=-1).mean(dim=-1)
 
@@ -782,7 +809,7 @@ class ManiFlowPPOTrainer:
         }
 
     def _flatten_batch_data(self, torch_batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        """Flatten rollout batch for minibatch training."""
+        """Flatten rollout batch for minibatch training. Data stays on original device (CPU)."""
         flat_data = {}
 
         # Flatten observations
@@ -798,6 +825,35 @@ class ManiFlowPPOTrainer:
                 flat_data[key] = torch_batch[key].flatten(0, 1)
 
         return flat_data
+
+    def _extract_minibatch_to_device(self, flat_data: Dict[str, torch.Tensor],
+                                      batch_indices: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Extract minibatch from CPU data and move to GPU.
+
+        This allows keeping all rollout data on CPU while only loading minibatches to GPU,
+        significantly reducing GPU memory usage for large rollout buffers.
+
+        Args:
+            flat_data: Flattened rollout data on CPU
+            batch_indices: Indices to extract for this minibatch
+
+        Returns:
+            mini_batch: Minibatch data on GPU
+        """
+        mini_batch = {}
+
+        for key, value in flat_data.items():
+            if key == 'observation':
+                # value is a dict of tensors
+                mini_batch[key] = {
+                    k: v[batch_indices].to(self.device, non_blocking=True)
+                    for k, v in value.items()
+                }
+            else:
+                mini_batch[key] = value[batch_indices].to(self.device, non_blocking=True)
+
+        return mini_batch
 
     def _log_training_metrics(self,
                             training_stats: Dict[str, float],

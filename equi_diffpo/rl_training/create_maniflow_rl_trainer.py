@@ -122,6 +122,7 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
         total_timesteps=rl_config.get('total_timesteps', 1000000),
         num_envs=rl_config.get('num_envs', 14),
         batch_size=rl_config.get('batch_size', 32),
+        gradient_accumulate_every=rl_config.get('gradient_accumulate_every', 64),
 
         # PPO hyperparameters
         learning_rate=rl_config.get('learning_rate', 1e-5),
