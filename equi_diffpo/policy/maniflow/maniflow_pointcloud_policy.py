@@ -210,7 +210,7 @@ class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
         t_inv = T_inv[:, :3, 3]   # [B, 3]
 
         # xyz_canonical = R_inv @ xyz + t_inv
-        xyz_canonical = torch.einsum('bij,btNj->btNi', R_inv, xyz) + t_inv[:, None, None, :]
+        xyz_canonical = torch.einsum('bij,btnj->btni', R_inv, xyz) + t_inv[:, None, None, :]
 
         return torch.cat([xyz_canonical, features], dim=-1)
 

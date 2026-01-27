@@ -2,11 +2,11 @@ defaults:
   - _self_
   - task: mimicgen_pc_abs
 
-name: train_maniflow_pointcloud
+name: train_maniflow_pointcloud_canonical
 _target_: equi_diffpo.workspace.train_maniflow_pointcloud_workspace.TrainManiFlowPointcloudWorkspace
 
 shape_meta: ${task.shape_meta}
-exp_name: "maniflow_pc"
+exp_name: "maniflow_pc_canonical"
 
 task_name: stack_d1
 n_demo: 100
@@ -65,7 +65,7 @@ policy:
   downsample_points: true
 
   # Canonicalization for SE(3) symmetry
-  use_canonicalization: false
+  use_canonicalization: true
 
   pointcloud_encoder_cfg:
     in_channels: 6
@@ -73,7 +73,7 @@ policy:
     use_layernorm: true
     final_norm: layernorm # layernorm, none
     normal_channel: false
-    num_points: ${policy.visual_cond_len} 
+    num_points: ${policy.visual_cond_len}
     pointwise: true
 ema:
   _target_: equi_diffpo.model.diffusion.ema_model.EMAModel
@@ -123,7 +123,7 @@ training:
   tqdm_interval_sec: 1.0
 
 logging:
-  project: maniflow_pointcloud_${task_name}
+  project: maniflow_pointcloud_canonical_${task_name}
   resume: True
   mode: online
   name: ${name}_${task_name}_${n_demo}demo
