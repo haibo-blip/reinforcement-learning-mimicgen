@@ -6,6 +6,7 @@ Complete PPO training pipeline for ManiFlow RL policy following RLinf pattern.
 
 import os
 import time
+import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -125,15 +126,31 @@ class ManiFlowPPOTrainer:
         self.optimizer = self._build_optimizer()
 
         # Learning rate scheduler
-        # Estimate total rollouts: ~1600 samples per rollout (50 episodes * ~32 steps)
-        estimated_samples_per_rollout = 1600
-        estimated_total_rollouts = self.config.total_timesteps // estimated_samples_per_rollout
+        # Dynamically calculate samples_per_rollout from policy and env_runner parameters
+        horizon = self.policy.horizon                    # policy 预测的 action chunk 大小
+        max_steps = self.env_runner.max_steps            # 每个 episode 的最大步数
+        train_n_episodes = self.config.train_n_episodes  # 每个 rollout 的 episode 数
+
+        # n_chunk_steps = 每个 episode 运行的 chunk 数
+        # samples_per_rollout = n_chunk_steps × train_n_episodes
+        n_chunk_steps = math.ceil(max_steps / horizon)
+        samples_per_rollout = n_chunk_steps * train_n_episodes
+        total_rollouts = self.config.total_timesteps // samples_per_rollout
+
+        print(f"📊 LR Scheduler 参数计算:")
+        print(f"  - horizon (action chunk size): {horizon}")
+        print(f"  - max_steps: {max_steps}")
+        print(f"  - train_n_episodes: {train_n_episodes}")
+        print(f"  - n_chunk_steps per episode: {n_chunk_steps}")
+        print(f"  - samples_per_rollout: {samples_per_rollout}")
+        print(f"  - estimated total_rollouts: {total_rollouts}")
+
         if self.config.lr_schedule == "linear":
             self.lr_scheduler = optim.lr_scheduler.LinearLR(
                 self.optimizer,
                 start_factor=1.0,
                 end_factor=0.0,
-                total_iters=estimated_total_rollouts
+                total_iters=total_rollouts
             )
         else:
             self.lr_scheduler = None
