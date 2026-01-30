@@ -75,7 +75,7 @@ policy:
 # RL Training Configuration
 rl_training:
   # Core training parameters
-  total_timesteps: 1000000
+  total_timesteps: 2000000
   num_envs: 16
   batch_size: 32
   effective_batch_size: 2048  # Target effective batch size
