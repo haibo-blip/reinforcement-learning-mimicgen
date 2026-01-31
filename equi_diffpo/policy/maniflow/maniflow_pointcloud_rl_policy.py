@@ -18,6 +18,7 @@ from termcolor import cprint
 
 from equi_diffpo.model.common.normalizer import LinearNormalizer
 from equi_diffpo.model.common.value_head import ValueHead, AttentionPool
+from equi_diffpo.model.common.rotation_transformer import RotationTransformer
 from equi_diffpo.policy.base_image_policy import BaseImagePolicy
 from equi_diffpo.common.pytorch_util import dict_apply
 from equi_diffpo.common.model_util import print_params
@@ -130,6 +131,9 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
                  safe_get_logprob: bool = False,
                  joint_logprob: bool = False,  # like Pi0.5
                  freeze_encoder: bool = True,  # Freeze visual encoder during RL training
+                 # Canonicalization for SE(3) equivariance
+                 use_canonicalization: bool = False,
+                 canonicalization_mode: str = "se3",  # "se3" or "translation_only"
                  **kwargs):
         super().__init__()
 
@@ -203,6 +207,18 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         if freeze_encoder:
             self.freeze_visual_encoder()
 
+        # Canonicalization for SE(3) equivariance
+        self.use_canonicalization = use_canonicalization
+        self.canonicalization_mode = canonicalization_mode
+        if self.use_canonicalization:
+            if self.canonicalization_mode == "se3":
+                # Full SE(3): need quaternion and rotation transformers
+                self.quat_to_matrix = RotationTransformer('quaternion', 'matrix')
+                self.rot6d_to_matrix = RotationTransformer('rotation_6d', 'matrix')
+                self.matrix_to_rot6d = RotationTransformer('matrix', 'rotation_6d')
+            # translation_only: no rotation transformers needed
+            cprint(f"[ManiFlowRLPointcloudPolicy] Canonicalization enabled: {canonicalization_mode}", "cyan")
+
         # RL-specific components
         if noise_method == "flow_noise":
             # Learnable noise head
@@ -262,6 +278,9 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         cprint(f"  - n_obs_steps: {self.n_obs_steps}", "yellow")
         cprint(f"  - num_inference_steps: {self.num_inference_steps}", "yellow")
         cprint(f"  - add_value_head: {add_value_head}", "yellow")
+        cprint(f"  - use_canonicalization: {self.use_canonicalization}", "yellow")
+        if self.use_canonicalization:
+            cprint(f"  - canonicalization_mode: {self.canonicalization_mode}", "yellow")
         if add_value_head:
             cprint(f"  - use_attention_pool: {use_attention_pool}", "yellow")
             if use_attention_pool:
@@ -278,6 +297,128 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         for param in self.obs_encoder.parameters():
             param.requires_grad = False
         cprint("[ManiFlowRLPointcloudPolicy] Visual encoder frozen", "cyan")
+
+    # ========= canonicalization helpers ============
+    def get_canonicalization_transform(self, obs_dict: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Get transformation matrices from gripper pose.
+
+        Args:
+            obs_dict: observation dict containing robot0_eef_pos and robot0_eef_quat
+
+        Returns:
+            T: [B, 4, 4] gripper pose as transformation matrix
+            T_inv: [B, 4, 4] inverse of T
+        """
+        # Get gripper pose from the latest observation step
+        eef_pos = obs_dict['robot0_eef_pos'][:, -1, :]  # [B, 3]
+
+        B = eef_pos.shape[0]
+        device = eef_pos.device
+        dtype = eef_pos.dtype
+
+        if self.canonicalization_mode == "se3":
+            # Full SE(3): use rotation from quaternion
+            eef_quat = obs_dict['robot0_eef_quat'][:, -1, :]  # [B, 4] xyzw format
+            quat_wxyz = eef_quat[..., [3, 0, 1, 2]]  # xyzw -> wxyz for pytorch3d
+            R = self.quat_to_matrix.forward(quat_wxyz)  # [B, 3, 3]
+        else:
+            # translation_only: R = Identity
+            R = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(B, -1, -1)
+
+        # Build 4x4 transformation matrix
+        T = torch.eye(4, device=device, dtype=dtype).unsqueeze(0).expand(B, -1, -1).clone()
+        T[:, :3, :3] = R
+        T[:, :3, 3] = eef_pos
+        T_inv = torch.linalg.inv(T)
+
+        return T, T_inv
+
+    def canonicalize_point_cloud(self, pcd: torch.Tensor, T_inv: torch.Tensor) -> torch.Tensor:
+        """
+        Transform point cloud from world frame to gripper frame.
+
+        Args:
+            pcd: [B, T_obs, N, 3+C] point cloud with xyz and optional features
+            T_inv: [B, 4, 4] inverse gripper transformation
+
+        Returns:
+            pcd_canonical: [B, T_obs, N, 3+C] canonicalized point cloud
+        """
+        xyz = pcd[..., :3]       # [B, T_obs, N, 3]
+        features = pcd[..., 3:]  # [B, T_obs, N, C]
+
+        R_inv = T_inv[:, :3, :3]  # [B, 3, 3]
+        t_inv = T_inv[:, :3, 3]   # [B, 3]
+
+        # xyz_canonical = R_inv @ xyz + t_inv
+        xyz_canonical = torch.einsum('bij,btnj->btni', R_inv, xyz) + t_inv[:, None, None, :]
+
+        return torch.cat([xyz_canonical, features], dim=-1)
+
+    def canonicalize_action(self, action: torch.Tensor, T_inv: torch.Tensor) -> torch.Tensor:
+        """
+        Transform absolute action from world frame to gripper frame.
+
+        Args:
+            action: [B, T, 10] = [pos(3), rot6d(6), gripper(1)] absolute action
+            T_inv: [B, 4, 4] inverse gripper transformation
+
+        Returns:
+            action_canonical: [B, T, 10] canonicalized action
+        """
+        pos = action[..., :3]       # [B, T, 3] target position
+        rot6d = action[..., 3:9]    # [B, T, 6] target rotation
+        gripper = action[..., 9:]   # [B, T, 1] gripper action
+
+        R_inv = T_inv[:, :3, :3]    # [B, 3, 3]
+        t_inv = T_inv[:, :3, 3]     # [B, 3]
+
+        # Position: rotate + translate
+        pos_canonical = torch.einsum('bij,btj->bti', R_inv, pos) + t_inv[:, None, :]
+
+        if self.canonicalization_mode == "se3":
+            # Rotation: rot6d -> matrix -> R_inv @ R -> rot6d
+            R_action = self.rot6d_to_matrix.forward(rot6d)  # [B, T, 3, 3]
+            R_canonical = torch.einsum('bij,btjk->btik', R_inv, R_action)
+            rot6d_canonical = self.matrix_to_rot6d.forward(R_canonical)  # [B, T, 6]
+        else:
+            # translation_only: rotation unchanged
+            rot6d_canonical = rot6d
+
+        return torch.cat([pos_canonical, rot6d_canonical, gripper], dim=-1)
+
+    def uncanonicalize_action(self, action_canonical: torch.Tensor, T: torch.Tensor) -> torch.Tensor:
+        """
+        Transform action from gripper frame back to world frame.
+
+        Args:
+            action_canonical: [B, T, 10] canonicalized action
+            T: [B, 4, 4] gripper transformation
+
+        Returns:
+            action_world: [B, T, 10] action in world frame
+        """
+        pos = action_canonical[..., :3]
+        rot6d = action_canonical[..., 3:9]
+        gripper = action_canonical[..., 9:]
+
+        R = T[:, :3, :3]  # [B, 3, 3]
+        t = T[:, :3, 3]   # [B, 3]
+
+        # Position: rotate + translate
+        pos_world = torch.einsum('bij,btj->bti', R, pos) + t[:, None, :]
+
+        if self.canonicalization_mode == "se3":
+            # Rotation: R @ R_canonical
+            R_canonical = self.rot6d_to_matrix.forward(rot6d)  # [B, T, 3, 3]
+            R_world = torch.einsum('bij,btjk->btik', R, R_canonical)
+            rot6d_world = self.matrix_to_rot6d.forward(R_world)  # [B, T, 6]
+        else:
+            # translation_only: rotation unchanged
+            rot6d_world = rot6d
+
+        return torch.cat([pos_world, rot6d_world, gripper], dim=-1)
 
     def compute_value(self, vis_cond: torch.Tensor) -> torch.Tensor:
         """
@@ -625,8 +766,8 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         Compute log probabilities, values, and entropy from chains (like OpenPI).
 
         Args:
-            observation: Observation dictionary
-            chains: Sampling chains [B, N+1, horizon, action_dim]
+            observation: Observation dictionary (world frame, from buffer)
+            chains: Sampling chains [B, N+1, horizon, action_dim] (normalized canonical frame)
             denoise_inds: Denoise indices [B, N]
             compute_values: Whether to compute values
 
@@ -638,7 +779,15 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         B = chains.shape[0]
         N = denoise_inds.shape[1]
 
-        # Encode observations
+        # === Canonicalization: transform observation to gripper frame ===
+        if self.use_canonicalization:
+            T_gripper, T_gripper_inv = self.get_canonicalization_transform(observation)
+            # Clone observation to avoid modifying buffer data
+            observation = {k: v.clone() if torch.is_tensor(v) else v for k, v in observation.items()}
+            observation['point_cloud'] = self.canonicalize_point_cloud(
+                observation['point_cloud'], T_gripper_inv)
+
+        # Encode observations (now in canonical frame if canonicalization enabled)
         vis_cond = self.encode_observations(observation)
 
         # Language conditioning
@@ -834,10 +983,18 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             - 'prev_values': Values if return_chains=True [B, N]
             - 'denoise_inds': Denoise indices if return_chains=True [B, N]
         """
-        # Encode observations
+        # === Canonicalization: transform point cloud to gripper frame ===
+        T_gripper = None
+        if self.use_canonicalization:
+            T_gripper, T_gripper_inv = self.get_canonicalization_transform(obs_dict)
+            # Clone obs_dict to avoid modifying original data
+            obs_dict = {k: v.clone() if torch.is_tensor(v) else v for k, v in obs_dict.items()}
+            obs_dict['point_cloud'] = self.canonicalize_point_cloud(
+                obs_dict['point_cloud'], T_gripper_inv)
 
+        # Encode observations (now in canonical frame if canonicalization enabled)
         vis_cond = self.encode_observations(obs_dict)
-        # import ipdb; ipdb.set_trace()
+
         value = next(iter(obs_dict.values()))
         B = value.shape[0]
         T = self.horizon
@@ -852,6 +1009,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         cond_data = torch.zeros(size=(B, T, Da), device=self.device, dtype=self.dtype)
 
         # Sample actions (with optional chains like Pi0.5)
+        # Output is in canonical frame (normalized)
         sample_result = self.conditional_sample(
             cond_data,
             vis_cond=vis_cond,
@@ -860,9 +1018,13 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         )
         nsample = sample_result['actions']
 
-        # Unnormalize prediction
+        # Unnormalize prediction (still in canonical frame)
         naction_pred = nsample[...,:Da]
         action_pred = self.normalizer['action'].unnormalize(naction_pred)
+
+        # === Uncanonicalize: transform action back to world frame ===
+        if self.use_canonicalization:
+            action_pred = self.uncanonicalize_action(action_pred, T_gripper)
 
         # Extract action steps
         start = self.n_obs_steps - 1
@@ -871,15 +1033,13 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
 
         # Prepare result
         result = {
-            'action': action,
-            'action_pred': action_pred,
+            'action': action,           # world frame (for env execution)
+            'action_pred': action_pred, # world frame
         }
 
         # Add chains and related data if requested (like Pi0.5)
         if return_chains:
-            # Unnormalize chains as well
-            # chains_unnorm = self.normalizer['action'].unnormalize(sample_result['chains'])
-
+            # chains stay in normalized canonical frame (for RL training)
             result.update({
                 'chains': sample_result['chains'],
                 'prev_logprobs': sample_result['prev_logprobs'],

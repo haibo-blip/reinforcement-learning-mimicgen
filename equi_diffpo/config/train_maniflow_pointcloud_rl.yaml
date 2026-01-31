@@ -63,6 +63,11 @@ policy:
   use_pc_color: false
   pointnet_type: "pointnet"
   downsample_points: true
+
+  # Canonicalization for SE(3) equivariance
+  use_canonicalization: false
+  canonicalization_mode: "se3"  # "se3" (rotation+translation) or "translation_only"
+
   pointcloud_encoder_cfg:
     in_channels: 6
     out_channels: ${policy.encoder_output_dim}
