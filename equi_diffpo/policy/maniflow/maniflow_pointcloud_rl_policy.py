@@ -835,6 +835,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             - 'denoise_inds': Denoise indices if return_chains=True [B, N]
         """
         # Encode observations
+
         vis_cond = self.encode_observations(obs_dict)
         # import ipdb; ipdb.set_trace()
         value = next(iter(obs_dict.values()))
