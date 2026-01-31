@@ -13,8 +13,8 @@ from equi_diffpo.model.vision_3d.pointnet_extractor import DP3Encoder
 from equi_diffpo.model.diffusion.ditx import DiTX
 from equi_diffpo.model.common.sample_util import *
 torch.backends.cuda.enable_flash_sdp(False)
-torch.backends.cuda.enable_mem_efficient_sdp(True)
-torch.backends.cuda.enable_math_sdp(False)
+torch.backends.cuda.enable_mem_efficient_sdp(False)
+torch.backends.cuda.enable_math_sdp(True)
 
 class ManiFlowTransformerPointcloudPolicy(BaseImagePolicy):
     def __init__(self, 
