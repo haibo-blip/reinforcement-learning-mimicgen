@@ -82,7 +82,7 @@ rl_training:
   # Core training parameters
   total_timesteps: 2000000
   num_envs: 16
-  batch_size: 32
+  batch_size: 16
   effective_batch_size: 2048  # Target effective batch size
   gradient_accumulate_every: ${eval:'${rl_training.effective_batch_size} // ${rl_training.batch_size}'}  # = 2048 // 32 = 64
 
