@@ -1,9 +1,3 @@
-# Equivariant Diffusion Policy
-[Project Website](https://equidiff.github.io) | [Paper](https://arxiv.org/pdf/2407.01812) | [Video](https://youtu.be/xIFSx_NVROU?si=MaxsHmih6AnQKAVy)  
-<a href="https://pointw.github.io/">Dian Wang</a><sup>1</sup>, <a href="https://www.linkedin.com/in/stephen-hart-3711666/">Stephen Hart</a><sup>2</sup>, <a href="https://www.linkedin.com/in/surovik/">David Surovik</a><sup>2</sup>, <a href="https://kelestemur.com">Tarik Kelestemur</a><sup>2</sup>, <a href="https://haojhuang.github.io/">Haojie Huang</a><sup>1</sup>, <a href="https://www.linkedin.com/in/haibo-zhao-b68742250/">Haibo Zhao</a><sup>1</sup>, <a href="https://www.linkedin.com/in/mark-yeatman-58a49763/">Mark Yeatman</a><sup>2</sup>, <a href="https://www.robo.guru/">Jiuguang Wang</a><sup>2</sup>, <a href="https://www.robinwalters.com/">Robin Walters</a><sup>1</sup>, <a href="https://helpinghandslab.netlify.app/people/">Robert Platt</a><sup>12</sup>  
-<sup>1</sup>Northeastern Univeristy, <sup>2</sup>Boston Dynamics AI Institute  
-Conference on Robot Learning 2024 (Oral)
-![](img/equi.gif) | 
 ## Installation
 1.  Install the following apt packages for mujoco:
     ```bash
@@ -45,6 +39,11 @@ Conference on Robot Learning 2024 (Oral)
     ```bash
     pip list | grep mujoco
     ```
+1. Installing missing package
+    ```bash
+    bash install_missing_packages.sh
+    ```
+
 
 ## Dataset
 ### Download Dataset
@@ -65,48 +64,46 @@ python equi_diffpo/scripts/dataset_states_to_obs.py --input data/robomimic/datas
 The downloaded dataset has a relative action space. To train with absolute action space, the dataset needs to be converted accordingly
 ```bash
 # Template
-python equi_diffpo/scripts/robomimic_dataset_conversion.py -i data/robomimic/datasets/[dataset]/[dataset].hdf5 -o data/robomimic/datasets/[dataset]/[dataset]_abs.hdf5 -n [n_worker]
+python equi_diffpo/scripts/robomimic_dataset_conversion.py -i equi_diffpo/data/robomimic/datasets/[dataset]/[dataset].hdf5 -o equi_diffpo/data/robomimic/datasets/[dataset]/[dataset]_abs.hdf5 -n [n_worker]
 # Replace [dataset] and [n_worker] with your choices.
 # E.g., convert stack_d1 (non-voxel) with 12 workers
-python equi_diffpo/scripts/robomimic_dataset_conversion.py -i data/robomimic/datasets/stack_d1/stack_d1_voxel.hdf5 -o data/robomimic/datasets/stack_d1/stack_d1_abs.hdf5 -n 12
+python equi_diffpo/scripts/robomimic_dataset_conversion.py -i equi_diffpo/data/robomimic/datasets/stack_d1/stack_d1_voxel.hdf5 -o equi_diffpo/data/robomimic/datasets/stack_d1/stack_d1_abs.hdf5 -n 12
 # E.g., convert stack_d1_voxel (voxel) with 12 workers
-python equi_diffpo/scripts/robomimic_dataset_conversion.py -i data/robomimic/datasets/stack_d1/stack_d1_voxel.hdf5 -o data/robomimic/datasets/stack_d1/stack_d1_voxel_abs.hdf5 -n 12
+python equi_diffpo/scripts/robomimic_dataset_conversion.py -i equi_diffpo/data/robomimic/datasets/stack_d1/stack_d1_voxel.hdf5 -o equi_diffpo/data/robomimic/datasets/stack_d1/stack_d1_voxel_abs.hdf5 -n 12
 ```
 
-## Training with image observation
-To train Equivariant Diffusion Policy (with absolute pose control) in Stack D1 task:
+## Training 
+### Pretrain Regular Maniflow
+To pretrain regular maniflow in Nut Assembly task:
 ```bash
 # Make sure you have the non-voxel converted dataset with absolute action space from the previous step 
-python train.py --config-name=train_equi_diffusion_unet_abs task_name=stack_d1 n_demo=100
+bash pretrain.sh
 ```
-To train with relative pose control instead:
+modify the para as needed --config-name=train_maniflow_pointcloud_workspace task_name=[task] n_demo=[n_demo]
+### Pretrain Equi Maniflow
+To pretrain Equi maniflow in Nut Assembly task:
 ```bash
-python train.py --config-name=train_equi_diffusion_unet_rel task_name=stack_d1 n_demo=100
-```
-To train in other tasks, replace `stack_d1` with `stack_three_d1`, `square_d2`, `threading_d2`, `coffee_d2`, `three_piece_assembly_d2`, `hammer_cleanup_d1`, `mug_cleanup_d1`, `kitchen_d1`, `nut_assembly_d0`, `pick_place_d0`, `coffee_preparation_d1`. Notice that the corresponding dataset should be downloaded already. If training absolute pose control, the data conversion is also needed.
 
-To run environments on CPU (to save GPU memory), use `osmesa` instead of `egl` through `MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa`, e.g.,
+bash pretrain_equi.sh
+```
+modify the para as needed --config-name=train_maniflow_pointcloud_workspace task_name=[task] n_demo=[n_demo]
+
+### RL Post train Regular Maniflow
+To post train regular maniflow in stack_three_d1 task:
 ```bash
-MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa python train.py --config-name=train_equi_diffusion_unet_abs task_name=stack_d1
-```
 
-Equivariant Diffusion Policy requires around 22G GPU memory to run with batch size of 128 (default). To reduce the GPU usage, consider training with smaller batch size and/or reducing the hidden dimension
+bash start_rl_training.sh
+```
+Modify these para as needed task_name=stack_three_d1 rl_training.num_envs=16 policy.checkpoint="data/outputs/2026.01.31/02.37.04_train_maniflow_pointcloud_canonical_stack_three_d1/checkpoints/1.ckpt" policy.checkpoint refer to checkpoint of pretraining model
+
+### RL Post train Equi Maniflow
+To post train Equi maniflow in stack_three_d1 task:
 ```bash
-# to train with batch size of 64 and hidden dimension of 64
-MUJOCO_GL=osmesa PYOPENGL_PLATTFORM=osmesa python train.py --config-name=train_equi_diffusion_unet_abs task_name=stack_d1 policy.enc_n_hidden=64 dataloader.batch_size=64
+
+bash start_rl_training_equi.sh
 ```
+Modify these para as needed task_name=stack_three_d1 rl_training.num_envs=16 policy.checkpoint="data/outputs/2026.01.31/02.37.04_train_maniflow_pointcloud_canonical_stack_three_d1/checkpoints/1.ckpt" policy.checkpoint refer to checkpoint of pretraining model
 
-## Training with voxel observation
-To train Equivariant Diffusion Policy (with absolute pose control) in Stack D1 task:
-```bash
-# Make sure you have the voxel converted dataset with absolute action space from the previous step 
-python train.py --config-name=train_equi_diffusion_unet_voxel_abs task_name=stack_d1 n_demo=100
-```
 
-## License
-This repository is released under the MIT license. See [LICENSE](LICENSE) for additional details.
 
-## Acknowledgement
-* Our repo is built upon the origional [Diffusion Policy](https://github.com/real-stanford/diffusion_policy)
-* Our ACT baseline is adaped from its [original repo](https://github.com/tonyzhaozh/act)
-* Our DP3 baseline is adaped from its [original repo](https://github.com/YanjieZe/3D-Diffusion-Policy)
+

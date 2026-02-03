@@ -1,0 +1,161 @@
+defaults:
+  - _self_
+  - task: mimicgen_pc_abs_rl
+
+name: train_maniflow_pointcloud_rl
+_target_: equi_diffpo.rl_training.rl_workspace.RLTrainingWorkspace
+
+# Reference the task configuration
+shape_meta: ${task.shape_meta}
+exp_name: "maniflow_pc_rl"
+
+task_name: nut_assembly_d0
+n_demo: 1000
+horizon: 16
+n_obs_steps: 2
+n_action_steps: 8
+n_latency_steps: 0
+dataset_obs_steps: ${n_obs_steps}
+
+# Dataset path (required by env_runner configuration)
+dataset_target: equi_diffpo.dataset.robomimic_replay_point_cloud_dataset.RobomimicReplayPointCloudDataset
+dataset_path: equi_diffpo/data/robomimic/datasets/${task_name}/${task_name}_voxel_abs.hdf5
+
+# Pretrained policy path (update this to your checkpoint)
+# pretrained_policy_path: "path/to/your/pretrained/checkpoint.ckpt"
+#pretrained_policy_path: "path/to/your/pretrained/checkpoint.ckpt
+# Policy configuration (same as training config)
+policy:
+  _target_: equi_diffpo.policy.maniflow.maniflow_pointcloud_rl_policy.ManiFlowRLPointcloudPolicy
+  checkpoint: data/outputs/2026.01.19/18.56.39_train_maniflow_pointcloud_nut_assembly_d0/checkpoints/epoch=00470.420.ckpt
+  # ManiFlow parameters
+  horizon: ${horizon}
+  n_action_steps: ${n_action_steps}
+  n_obs_steps: ${n_obs_steps}
+  num_inference_steps: 4
+  obs_as_global_cond: True
+
+  # DiTX Transformer architecture
+  n_layer: 12
+  n_head: 8
+  n_emb: 768
+  visual_cond_len: 1024
+  qkv_bias: True
+  qk_norm: True
+  block_type: "DiTX"
+  language_conditioned: False
+
+  # Flow model parameters
+  diffusion_timestep_embed_dim: 128
+  diffusion_target_t_embed_dim: 128
+
+  # RL exploration noise
+  noise_level: 0.1
+  noise_anneal: true
+  noise_params: [0.1, 0.2, 100]  # [noise_start, noise_end, anneal_steps]
+
+  # Point cloud encoder parameters
+  encoder_type: "DP3Encoder"
+  crop_shape: null
+  encoder_output_dim: 128
+  shape_meta: ${shape_meta}
+
+  use_pc_color: true
+  pointnet_type: "pointnet"
+  downsample_points: true
+
+  # Canonicalization for SE(3) equivariance
+  use_canonicalization: true
+  canonicalization_mode: "se3"  # "se3" (rotation+translation) or "translation_only"
+
+  pointcloud_encoder_cfg:
+    in_channels: 6
+    out_channels: ${policy.encoder_output_dim}
+    use_layernorm: true
+    final_norm: layernorm # layernorm, none
+    normal_channel: false
+    num_points: ${policy.visual_cond_len}
+    pointwise: true
+
+# RL Training Configuration
+rl_training:
+  # Core training parameters
+  total_timesteps: 2000000
+  num_envs: 16
+  batch_size: 16
+  effective_batch_size: 2048  # Target effective batch size
+  gradient_accumulate_every: ${eval:'${rl_training.effective_batch_size} // ${rl_training.batch_size}'}  # = 2048 // 32 = 64
+
+  # PPO hyperparameters
+  learning_rate: 1.0e-5      # Actor learning rate
+  value_lr: 2.0e-4           # Critic learning rate (~20x higher, like RLinf)
+  clip_range: 0.2
+  entropy_coef: 0
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  target_kl: 0.03
+
+  # GAE parameters
+  gamma: 0.99
+  gae_lambda: 0.95
+
+  # Learning rate schedule
+  lr_schedule: "linear"
+  warmup_steps: 10000
+
+  # Logging and checkpointing
+  eval_interval: 3           # Eval every N rollouts
+  log_interval: 10
+  save_interval: 100
+
+  # Rollout video logging
+  rollout_video_interval: 20  # Upload rollout videos every N rollouts
+  n_rollout_videos: 4         # Number of videos to upload per interval
+
+  # Episode counts (separate for train rollouts and evaluation)
+  train_n_episodes: 500        # Episodes per training rollout
+  eval_n_episodes: 50         # Episodes per evaluation
+
+  # Critic warmup
+  critic_warmup_rollouts: 4   # Number of rollouts to warmup critic before training actor
+  critic_warmup_epochs: 3     # Number of epochs per rollout during critic warmup
+
+# Training configuration
+training:
+  device: "cuda:0"
+  seed: 42
+
+# Logging configuration
+logging:
+  project: maniflow_pointcloud_rl_${task_name}_equi
+  resume: True
+  mode: online
+  name: ${name}_${task_name}_rl
+  tags: ["${name}", "${task_name}", "${exp_name}", "rl"]
+  id: null
+  group: ${exp_name}
+
+# Checkpoint configuration (inherited from task)
+checkpoint:
+  save_ckpt: True
+  topk:
+    monitor_key: rl_mean_episode_reward
+    mode: max
+    k: 5
+    format_str: 'epoch={epoch:04d}-reward={rl_mean_episode_reward:.3f}.ckpt'
+  save_last_ckpt: True
+  save_last_snapshot: False
+
+# Output configuration
+multi_run:
+  run_dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
+
+hydra:
+  job:
+    override_dirname: ${name}
+  run:
+    dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+  sweep:
+    dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+    subdir: ${hydra.job.num}

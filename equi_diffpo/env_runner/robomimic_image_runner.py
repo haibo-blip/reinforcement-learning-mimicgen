@@ -32,9 +32,9 @@ def create_env(env_meta, shape_meta, enable_render=True):
 
     env = EnvUtils.create_env_from_metadata(
         env_meta=env_meta,
-        render=False, 
+        render=False,
         render_offscreen=enable_render,
-        use_image_obs=enable_render, 
+        use_image_obs=enable_render,
     )
     return env
 
@@ -44,7 +44,7 @@ class RobomimicImageRunner(BaseImageRunner):
     Robomimic envs already enforces number of steps.
     """
 
-    def __init__(self, 
+    def __init__(self,
             output_dir,
             dataset_path,
             shape_meta:dict,
@@ -88,7 +88,7 @@ class RobomimicImageRunner(BaseImageRunner):
 
         def env_fn():
             robomimic_env = create_env(
-                env_meta=env_meta, 
+                env_meta=env_meta,
                 shape_meta=shape_meta
             )
             # Robosuite's hard reset causes excessive memory consumption.
@@ -118,14 +118,14 @@ class RobomimicImageRunner(BaseImageRunner):
                 n_action_steps=n_action_steps,
                 max_episode_steps=max_steps
             )
-        
+
         # For each process the OpenGL context can only be initialized once
         # Since AsyncVectorEnv uses fork to create worker process,
         # a separate env_fn that does not create OpenGL context (enable_render=False)
         # is needed to initialize spaces.
         def dummy_env_fn():
             robomimic_env = create_env(
-                    env_meta=env_meta, 
+                    env_meta=env_meta,
                     shape_meta=shape_meta,
                     enable_render=False
                 )
@@ -165,7 +165,7 @@ class RobomimicImageRunner(BaseImageRunner):
                 enable_render = i < n_train_vis
                 init_state = f[f'data/demo_{train_idx}/states'][0]
 
-                def init_fn(env, init_state=init_state, 
+                def init_fn(env, init_state=init_state,
                     enable_render=enable_render):
                     # setup rendering
                     # video_wrapper
@@ -175,7 +175,7 @@ class RobomimicImageRunner(BaseImageRunner):
                     if enable_render:
                         filename = pathlib.Path(output_dir).joinpath(
                             'media', wv.util.generate_id() + ".mp4")
-                        filename.parent.mkdir(parents=False, exist_ok=True)
+                        filename.parent.mkdir(parents=True, exist_ok=True)
                         filename = str(filename)
                         env.env.file_path = filename
 
@@ -186,13 +186,13 @@ class RobomimicImageRunner(BaseImageRunner):
                 env_seeds.append(train_idx)
                 env_prefixs.append('train/')
                 env_init_fn_dills.append(dill.dumps(init_fn))
-        
+
         # test
         for i in range(n_test):
             seed = test_start_seed + i
             enable_render = i < n_test_vis
 
-            def init_fn(env, seed=seed, 
+            def init_fn(env, seed=seed,
                 enable_render=enable_render):
                 # setup rendering
                 # video_wrapper
@@ -202,7 +202,7 @@ class RobomimicImageRunner(BaseImageRunner):
                 if enable_render:
                     filename = pathlib.Path(output_dir).joinpath(
                         'media', wv.util.generate_id() + ".mp4")
-                    filename.parent.mkdir(parents=False, exist_ok=True)
+                    filename.parent.mkdir(parents=True, exist_ok=True)
                     filename = str(filename)
                     env.env.file_path = filename
 
@@ -240,7 +240,7 @@ class RobomimicImageRunner(BaseImageRunner):
         device = policy.device
         dtype = policy.dtype
         env = self.env
-        
+
         # plan for rollout
         n_envs = len(self.env_fns)
         n_inits = len(self.env_init_fn_dills)
@@ -256,7 +256,7 @@ class RobomimicImageRunner(BaseImageRunner):
             this_global_slice = slice(start, end)
             this_n_active_envs = end - start
             this_local_slice = slice(0,this_n_active_envs)
-            
+
             this_init_fns = self.env_init_fn_dills[this_global_slice]
             n_diff = n_envs - len(this_init_fns)
             if n_diff > 0:
@@ -264,7 +264,7 @@ class RobomimicImageRunner(BaseImageRunner):
             assert len(this_init_fns) == n_envs
 
             # init envs
-            env.call_each('run_dill_function', 
+            env.call_each('run_dill_function',
                 args_list=[(x,) for x in this_init_fns])
 
             # start rollout
@@ -273,9 +273,9 @@ class RobomimicImageRunner(BaseImageRunner):
             policy.reset()
 
             env_name = self.env_meta['env_name']
-            pbar = tqdm.tqdm(total=self.max_steps, desc=f"Eval {env_name}Image {chunk_idx+1}/{n_chunks}", 
+            pbar = tqdm.tqdm(total=self.max_steps, desc=f"Eval {env_name}Image {chunk_idx+1}/{n_chunks}",
                 leave=False, mininterval=self.tqdm_interval_sec)
-            
+
             done = False
             while not done:
                 # create obs dict
@@ -284,9 +284,9 @@ class RobomimicImageRunner(BaseImageRunner):
                     # TODO: not tested
                     np_obs_dict['past_action'] = past_action[
                         :,-(self.n_obs_steps-1):].astype(np.float32)
-                
+
                 # device transfer
-                obs_dict = dict_apply(np_obs_dict, 
+                obs_dict = dict_apply(np_obs_dict,
                     lambda x: torch.from_numpy(x).to(
                         device=device))
 
@@ -302,7 +302,7 @@ class RobomimicImageRunner(BaseImageRunner):
                 if not np.all(np.isfinite(action)):
                     print(action)
                     raise RuntimeError("Nan or Inf action")
-                
+
                 # step env
                 env_action = action
                 if self.abs_action:
@@ -321,7 +321,7 @@ class RobomimicImageRunner(BaseImageRunner):
             all_rewards[this_global_slice] = env.call('get_attr', 'reward')[this_local_slice]
         # clear out video buffer
         _ = env.reset()
-        
+
         # log
         max_rewards = collections.defaultdict(list)
         log_data = dict()
@@ -345,7 +345,7 @@ class RobomimicImageRunner(BaseImageRunner):
             if video_path is not None:
                 sim_video = wandb.Video(video_path)
                 log_data[prefix+f'sim_video_{seed}'] = sim_video
-        
+
         # log aggregate metrics
         for prefix, value in max_rewards.items():
             name = prefix+'mean_score'
