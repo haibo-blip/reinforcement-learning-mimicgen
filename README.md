@@ -83,10 +83,27 @@ modify the para as needed --config-name=train_maniflow_pointcloud_workspace task
 ### Pretrain Equi Maniflow
 To pretrain Equi maniflow in Nut Assembly task:
 ```bash
-# Make sure you have the non-voxel converted dataset with absolute action space from the previous step 
+
 bash pretrain_equi.sh
 ```
 modify the para as needed --config-name=train_maniflow_pointcloud_workspace task_name=[task] n_demo=[n_demo]
+
+### RL Post train Regular Maniflow
+To post train regular maniflow in stack_three_d1 task:
+```bash
+
+bash start_rl_training.sh
+```
+Modify these para as needed task_name=stack_three_d1 rl_training.num_envs=16 policy.checkpoint="data/outputs/2026.01.31/02.37.04_train_maniflow_pointcloud_canonical_stack_three_d1/checkpoints/1.ckpt" policy.checkpoint refer to checkpoint of pretraining model
+
+### RL Post train Equi Maniflow
+To post train Equi maniflow in stack_three_d1 task:
+```bash
+
+bash start_rl_training_equi.sh
+```
+Modify these para as needed task_name=stack_three_d1 rl_training.num_envs=16 policy.checkpoint="data/outputs/2026.01.31/02.37.04_train_maniflow_pointcloud_canonical_stack_three_d1/checkpoints/1.ckpt" policy.checkpoint refer to checkpoint of pretraining model
+
 
 
 

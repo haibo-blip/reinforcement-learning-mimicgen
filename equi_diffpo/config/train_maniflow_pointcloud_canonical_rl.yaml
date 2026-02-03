@@ -39,7 +39,7 @@ policy:
   n_layer: 12
   n_head: 8
   n_emb: 768
-  visual_cond_len: 512
+  visual_cond_len: 1024
   qkv_bias: True
   qk_norm: True
   block_type: "DiTX"
@@ -60,7 +60,7 @@ policy:
   encoder_output_dim: 128
   shape_meta: ${shape_meta}
 
-  use_pc_color: false
+  use_pc_color: true
   pointnet_type: "pointnet"
   downsample_points: true
 
