@@ -706,6 +706,24 @@ class ManiFlowPPOTrainer:
         # If critic_only mode, skip policy loss computation
         if critic_only:
             total_loss = self.config.value_coef * value_loss
+
+            # Still compute explained_variance for monitoring critic learning
+            with torch.no_grad():
+                y_pred = values_expanded.flatten()
+                y_true = returns.flatten()
+                if loss_mask is not None:
+                    value_mask_flat = loss_mask[:, 0].bool()
+                    y_pred_masked = y_pred[value_mask_flat]
+                    y_true_masked = y_true[value_mask_flat]
+                    if len(y_true_masked) > 0:
+                        var_y = torch.var(y_true_masked)
+                        explained_var = 1 - torch.var(y_true_masked - y_pred_masked) / (var_y + 1e-8)
+                    else:
+                        explained_var = torch.tensor(0.0, device=values.device)
+                else:
+                    var_y = torch.var(y_true)
+                    explained_var = 1 - torch.var(y_true - y_pred) / (var_y + 1e-8)
+
             return {
                 'policy_loss': torch.tensor(0.0, device=values.device),
                 'value_loss': value_loss,
@@ -713,7 +731,7 @@ class ManiFlowPPOTrainer:
                 'total_loss': total_loss,
                 'kl_divergence': torch.tensor(0.0, device=values.device),
                 'clip_fraction': torch.tensor(0.0, device=values.device),
-                'explained_variance': torch.tensor(0.0, device=values.device),
+                'explained_variance': explained_var,
             }
 
         # Average old_logprobs over N (denoising steps) to match new_logprobs shape
