@@ -207,8 +207,8 @@ class ManiFlowPPOTrainer:
 
         for name, param in self.policy.named_parameters():
             if param.requires_grad:
-                # Check if this is a value head parameter
-                if "value_head" in name or "value_mlp" in name:
+                # Check if this is a critic parameter (value_head or attention_pool)
+                if "value_head" in name or "value_mlp" in name or "attention_pool" in name:
                     params_critic.append(param)
                 else:
                     params_actor.append(param)
