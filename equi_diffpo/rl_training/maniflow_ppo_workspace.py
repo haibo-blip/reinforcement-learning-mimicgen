@@ -210,6 +210,7 @@ class ManiFlowPPOTrainer:
                 # Check if this is a critic parameter (value_head or attention_pool)
                 if "value_head" in name or "value_mlp" in name or "attention_pool" in name:
                     params_critic.append(param)
+                    print(f'{name} is added')
                 else:
                     params_actor.append(param)
 
