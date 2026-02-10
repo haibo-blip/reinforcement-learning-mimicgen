@@ -159,6 +159,11 @@ def create_maniflow_rl_trainer_from_config(cfg: OmegaConf,
         # Critic warmup
         critic_warmup_rollouts=rl_config.get('critic_warmup_rollouts', 0),
         critic_warmup_epochs=rl_config.get('critic_warmup_epochs', 3),
+
+        # FPO (Flow Policy Optimization) parameters
+        loss_mode=rl_config.get('loss_mode', 'gaussian'),
+        fpo_average_losses_before_exp=rl_config.get('fpo_average_losses_before_exp', True),
+        fpo_clipping_epsilon=rl_config.get('fpo_clipping_epsilon', 0.05),
     )
 
     # 7. Create advantage config - parameters from rl_training

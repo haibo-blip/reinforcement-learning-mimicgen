@@ -164,6 +164,10 @@ class RobomimicRLRunner(RobomimicImageRunner):
         episode_denoise_inds = []
         episode_x_means = []
         episode_x_stds = []
+        # FPO-specific data
+        episode_fpo_loss_eps = []
+        episode_fpo_loss_t = []
+        episode_fpo_initial_cfm_loss = []
 
         # Start rollout
         obs = env.reset()
@@ -211,6 +215,15 @@ class RobomimicRLRunner(RobomimicImageRunner):
                 denoise_inds = sample_result['denoise_inds'].detach().cpu().numpy()
                 x_means = sample_result['x_means'].detach().cpu().numpy()  # [B, N, T, Da]
                 x_stds = sample_result['x_stds'].detach().cpu().numpy()  # [B, N, T, Da]
+
+                # Extract FPO data if available
+                fpo_loss_eps = sample_result.get('fpo_loss_eps')
+                fpo_loss_t = sample_result.get('fpo_loss_t')
+                fpo_initial_cfm_loss = sample_result.get('fpo_initial_cfm_loss')
+                if fpo_loss_eps is not None:
+                    fpo_loss_eps = fpo_loss_eps.detach().cpu().numpy()
+                    fpo_loss_t = fpo_loss_t.detach().cpu().numpy()
+                    fpo_initial_cfm_loss = fpo_initial_cfm_loss.detach().cpu().numpy()
 
             # Check for nan/inf
             if not np.all(np.isfinite(action)):
@@ -264,6 +277,12 @@ class RobomimicRLRunner(RobomimicImageRunner):
             episode_x_means.append(x_means[:n_active_envs])
             episode_x_stds.append(x_stds[:n_active_envs])
 
+            # Store FPO data if available
+            if fpo_loss_eps is not None:
+                episode_fpo_loss_eps.append(fpo_loss_eps[:n_active_envs])
+                episode_fpo_loss_t.append(fpo_loss_t[:n_active_envs])
+                episode_fpo_initial_cfm_loss.append(fpo_initial_cfm_loss[:n_active_envs])
+
             past_action = action
             step_count += 1
             # step_count += action.shape[1]
@@ -273,7 +292,7 @@ class RobomimicRLRunner(RobomimicImageRunner):
 
         pbar.close()
 
-        return {
+        result = {
             'observations': episode_observations,
             'actions': episode_actions,
             'rewards': episode_rewards,
@@ -287,6 +306,14 @@ class RobomimicRLRunner(RobomimicImageRunner):
             'n_active_envs': n_active_envs,
             'n_steps': step_count,
         }
+
+        # Add FPO data if available
+        if len(episode_fpo_loss_eps) > 0:
+            result['fpo_loss_eps'] = episode_fpo_loss_eps
+            result['fpo_loss_t'] = episode_fpo_loss_t
+            result['fpo_initial_cfm_loss'] = episode_fpo_initial_cfm_loss
+
+        return result
 
     def _copy_obs_dict(self, obs_dict: Dict[str, np.ndarray], n_active_envs: int) -> Dict[str, np.ndarray]:
         """Copy observation dictionary for the active environments."""
@@ -379,6 +406,25 @@ class RobomimicRLRunner(RobomimicImageRunner):
             'total_steps': total_steps,
             'total_envs': total_envs,
         }
+
+        # Handle FPO data if available
+        if 'fpo_loss_eps' in chunk_data_list[0] and chunk_data_list[0]['fpo_loss_eps']:
+            fpo_eps_per_chunk = [np.stack(chunk['fpo_loss_eps'], axis=0) for chunk in chunk_data_list]
+            combined_fpo_loss_eps = np.concatenate(fpo_eps_per_chunk, axis=1)
+
+            fpo_t_per_chunk = [np.stack(chunk['fpo_loss_t'], axis=0) for chunk in chunk_data_list]
+            combined_fpo_loss_t = np.concatenate(fpo_t_per_chunk, axis=1)
+
+            fpo_cfm_per_chunk = [np.stack(chunk['fpo_initial_cfm_loss'], axis=0) for chunk in chunk_data_list]
+            combined_fpo_initial_cfm_loss = np.concatenate(fpo_cfm_per_chunk, axis=1)
+
+            combined_data['fpo_loss_eps'] = combined_fpo_loss_eps
+            combined_data['fpo_loss_t'] = combined_fpo_loss_t
+            combined_data['fpo_initial_cfm_loss'] = combined_fpo_initial_cfm_loss
+
+            print(f"  - FPO loss_eps: {combined_fpo_loss_eps.shape}")
+            print(f"  - FPO loss_t: {combined_fpo_loss_t.shape}")
+            print(f"  - FPO initial_cfm_loss: {combined_fpo_initial_cfm_loss.shape}")
 
         print(f"✅ Combined RL data: [n_steps={total_steps}, n_envs={total_envs}]")
         print(f"  - actions: {combined_actions.shape}")

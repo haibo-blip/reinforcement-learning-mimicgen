@@ -41,6 +41,11 @@ class PPOConfig:
     value_coef: float = 0.5           # Value loss coefficient
     target_kl: float = 0.01           # Target KL divergence for early stopping
 
+    # FPO (Flow Policy Optimization) parameters
+    loss_mode: str = "gaussian"       # "gaussian" (standard PPO) or "fpo" (Flow Policy Optimization)
+    fpo_average_losses_before_exp: bool = True  # Average CFM losses before exp (more stable)
+    fpo_clipping_epsilon: float = 0.05  # PPO clip for FPO (smaller than standard 0.2)
+
     # Critic warmup
     critic_warmup_rollouts: int = 0   # Number of rollouts to warmup critic before training actor
     critic_warmup_epochs: int = 3     # Number of epochs per rollout during critic warmup
@@ -418,13 +423,19 @@ class ManiFlowPPOTrainer:
                 mini_batch = self._extract_minibatch_to_device(flat_data, batch_indices)
 
                 # Forward pass through policy
+                forward_data = {
+                    'observation': mini_batch['observation'],
+                    'chains': mini_batch['chains'],
+                    'denoise_inds': mini_batch['denoise_inds'],
+                    'prev_logprobs': mini_batch['prev_logprobs']
+                }
+                # Add FPO data if available
+                if self.config.loss_mode == 'fpo' and 'fpo_loss_eps' in mini_batch:
+                    forward_data['fpo_loss_eps'] = mini_batch['fpo_loss_eps']
+                    forward_data['fpo_loss_t'] = mini_batch['fpo_loss_t']
+
                 policy_outputs = self.policy.default_forward(
-                    data={
-                        'observation': mini_batch['observation'],
-                        'chains': mini_batch['chains'],
-                        'denoise_inds': mini_batch['denoise_inds'],
-                        'prev_logprobs': mini_batch['prev_logprobs']
-                    },
+                    data=forward_data,
                     compute_values=True
                 )
 
@@ -734,19 +745,52 @@ class ManiFlowPPOTrainer:
                 'explained_variance': explained_var,
             }
 
-        # Average old_logprobs over N (denoising steps) to match new_logprobs shape
-        # old_logprobs: [batch, N, action_chunk, action_dim] -> [batch, action_chunk, action_dim]
-        old_logprobs = old_logprobs.mean(dim=1)
-        new_logprobs = new_logprobs.mean(dim=1)
-        # Sum over action_dim to get joint log probability (following RLinf pattern)
-        old_logprobs_flat = old_logprobs.sum(dim=-1)  # [batch, action_chunk]
-        new_logprobs_flat = new_logprobs.sum(dim=-1)  # [batch, action_chunk]
-        # Importance sampling ratio
-        log_ratio = new_logprobs_flat - old_logprobs_flat
-        ratio = torch.exp(log_ratio)
+        # Compute importance ratio based on loss mode
+        if self.config.loss_mode == "fpo":
+            # FPO: rho_s = exp(initial_cfm_loss - current_cfm_loss)
+            initial_cfm_loss = mini_batch['fpo_initial_cfm_loss']  # [batch, n_samples]
+            current_cfm_loss = policy_outputs['current_cfm_loss']  # [batch, n_samples]
+
+            if self.config.fpo_average_losses_before_exp:
+                # Average CFM losses before exp (more stable)
+                cfm_diff = initial_cfm_loss.mean(dim=-1) - current_cfm_loss.mean(dim=-1)  # [batch]
+                # Clamp to prevent numerical issues
+                cfm_diff = torch.clamp(cfm_diff, -3.0, 3.0)
+                rho_s = torch.exp(cfm_diff)  # [batch]
+            else:
+                # Exp first, then average (original FPO formula)
+                cfm_diff = torch.clamp(initial_cfm_loss - current_cfm_loss, -3.0, 3.0)  # [batch, n_samples]
+                rho_s = torch.exp(cfm_diff).mean(dim=-1)  # [batch]
+
+            # Expand ratio to match advantages shape [batch, action_chunk]
+            ratio = rho_s.unsqueeze(-1).expand_as(advantages)
+            log_ratio = cfm_diff if self.config.fpo_average_losses_before_exp else cfm_diff.mean(dim=-1)
+            log_ratio = log_ratio.unsqueeze(-1).expand_as(advantages)  # For metrics
+
+            # Use FPO-specific clipping epsilon
+            clip_eps = self.config.fpo_clipping_epsilon
+            clipped_ratio = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps)
+
+            # For metrics tracking
+            old_logprobs_flat = torch.zeros_like(advantages)  # Placeholder for FPO
+            new_logprobs_flat = torch.zeros_like(advantages)  # Placeholder for FPO
+        else:
+            # Gaussian mode: use log probability ratio
+            # Average old_logprobs over N (denoising steps) to match new_logprobs shape
+            # old_logprobs: [batch, N, action_chunk, action_dim] -> [batch, action_chunk, action_dim]
+            old_logprobs = old_logprobs.mean(dim=1)
+            new_logprobs = new_logprobs.mean(dim=1)
+            # Sum over action_dim to get joint log probability (following RLinf pattern)
+            old_logprobs_flat = old_logprobs.sum(dim=-1)  # [batch, action_chunk]
+            new_logprobs_flat = new_logprobs.sum(dim=-1)  # [batch, action_chunk]
+            # Importance sampling ratio
+            log_ratio = new_logprobs_flat - old_logprobs_flat
+            ratio = torch.exp(log_ratio)
+
+            # Use standard PPO clipping
+            clipped_ratio = torch.clamp(ratio, 1.0 - self.config.clip_range, 1.0 + self.config.clip_range)
 
         # Clipped policy loss (PPO objective)
-        clipped_ratio = torch.clamp(ratio, 1.0 - self.config.clip_range, 1.0 + self.config.clip_range)
         policy_loss_1 = -advantages * ratio
         policy_loss_2 = -advantages * clipped_ratio
         policy_loss_unmasked = torch.max(policy_loss_1, policy_loss_2)
@@ -759,6 +803,12 @@ class ManiFlowPPOTrainer:
             n_pos = pos_mask.sum().item()
             n_neg = neg_mask.sum().item()
 
+            # Use appropriate clipping epsilon for debug output
+            debug_clip_eps = (self.config.fpo_clipping_epsilon
+                              if self.config.loss_mode == "fpo"
+                              else self.config.clip_range)
+            mode_str = "FPO" if self.config.loss_mode == "fpo" else "PPO"
+
             if n_pos > 0 and n_neg > 0 and hasattr(self, '_debug_counter'):
                 self._debug_counter += 1
                 if self._debug_counter % 50 == 1:  # Print every 50 batches
@@ -768,18 +818,18 @@ class ManiFlowPPOTrainer:
                     # Positive samples stats
                     pos_ratio = ratio_mean[pos_mask].mean().item()
                     pos_log_ratio = log_ratio_mean[pos_mask].mean().item()
-                    pos_clipped = ((ratio_mean[pos_mask] > 1 + self.config.clip_range) |
-                                   (ratio_mean[pos_mask] < 1 - self.config.clip_range)).float().mean().item()
+                    pos_clipped = ((ratio_mean[pos_mask] > 1 + debug_clip_eps) |
+                                   (ratio_mean[pos_mask] < 1 - debug_clip_eps)).float().mean().item()
                     pos_loss = policy_loss_unmasked[pos_mask].mean().item()
 
                     # Negative samples stats
                     neg_ratio = ratio_mean[neg_mask].mean().item()
                     neg_log_ratio = log_ratio_mean[neg_mask].mean().item()
-                    neg_clipped = ((ratio_mean[neg_mask] > 1 + self.config.clip_range) |
-                                   (ratio_mean[neg_mask] < 1 - self.config.clip_range)).float().mean().item()
+                    neg_clipped = ((ratio_mean[neg_mask] > 1 + debug_clip_eps) |
+                                   (ratio_mean[neg_mask] < 1 - debug_clip_eps)).float().mean().item()
                     neg_loss = policy_loss_unmasked[neg_mask].mean().item()
 
-                    print(f"\n      🔬 PPO Debug (batch {self._debug_counter}):")
+                    print(f"\n      🔬 {mode_str} Debug (batch {self._debug_counter}):")
                     print(f"         Positive ({n_pos}): ratio={pos_ratio:.4f}, log_ratio={pos_log_ratio:.4f}, clipped={pos_clipped*100:.1f}%, loss={pos_loss:.4f}")
                     print(f"         Negative ({n_neg}): ratio={neg_ratio:.4f}, log_ratio={neg_log_ratio:.4f}, clipped={neg_clipped*100:.1f}%, loss={neg_loss:.4f}")
             elif not hasattr(self, '_debug_counter'):
@@ -807,16 +857,21 @@ class ManiFlowPPOTrainer:
 
         # Additional metrics (with masking)
         with torch.no_grad():
+            # Use appropriate clipping epsilon for clip_fraction metric
+            clip_eps_for_metric = (self.config.fpo_clipping_epsilon
+                                   if self.config.loss_mode == "fpo"
+                                   else self.config.clip_range)
+
             kl_unmasked = (old_logprobs_flat - new_logprobs_flat) ** 2
             if loss_mask is not None:
                 kl_divergence = masked_mean(kl_unmasked, loss_mask.bool())
                 clip_fraction = masked_mean(
-                    (torch.abs(ratio - 1.0) > self.config.clip_range).float(),
+                    (torch.abs(ratio - 1.0) > clip_eps_for_metric).float(),
                     loss_mask.bool()
                 )
             else:
                 kl_divergence = kl_unmasked.mean()
-                clip_fraction = (torch.abs(ratio - 1.0) > self.config.clip_range).float().mean()
+                clip_fraction = (torch.abs(ratio - 1.0) > clip_eps_for_metric).float().mean()
 
             # Explained variance (masked)
             y_pred = values_expanded.flatten()
@@ -855,8 +910,10 @@ class ManiFlowPPOTrainer:
             obs_dict[key] = value.flatten(0, 1)
         flat_data['observation'] = obs_dict
 
-        # Flatten other tensors
-        for key in ['chains', 'denoise_inds', 'prev_logprobs', 'prev_values', 'advantages', 'returns', 'loss_mask','x_stds','x_means']:
+        # Flatten other tensors (including FPO fields)
+        for key in ['chains', 'denoise_inds', 'prev_logprobs', 'prev_values', 'advantages', 'returns',
+                    'loss_mask', 'x_stds', 'x_means',
+                    'fpo_loss_eps', 'fpo_loss_t', 'fpo_initial_cfm_loss']:
             if key in torch_batch and torch_batch[key] is not None:
                 flat_data[key] = torch_batch[key].flatten(0, 1)
 

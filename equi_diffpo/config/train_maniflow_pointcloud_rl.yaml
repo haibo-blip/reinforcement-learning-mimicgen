@@ -68,6 +68,12 @@ policy:
   use_canonicalization: false
   canonicalization_mode: "se3"  # "se3" (rotation+translation) or "translation_only"
 
+  # FPO (Flow Policy Optimization) parameters
+  loss_mode: "gaussian"  # "gaussian" (standard PPO) or "fpo" (Flow Policy Optimization)
+  fpo_n_samples_per_action: 8  # Number of (eps, t) samples per action for FPO
+  fpo_average_losses_before_exp: true  # Average CFM losses before exp (more stable)
+  fpo_discretize_t: true  # Use discrete timesteps from flow schedule
+
   pointcloud_encoder_cfg:
     in_channels: 6
     out_channels: ${policy.encoder_output_dim}
@@ -119,6 +125,11 @@ rl_training:
   # Critic warmup
   critic_warmup_rollouts: 4   # Number of rollouts to warmup critic before training actor
   critic_warmup_epochs: 3     # Number of epochs per rollout during critic warmup
+
+  # FPO (Flow Policy Optimization) parameters
+  loss_mode: ${policy.loss_mode}  # Inherit from policy config
+  fpo_average_losses_before_exp: ${policy.fpo_average_losses_before_exp}
+  fpo_clipping_epsilon: 0.05  # PPO clip for FPO (smaller than standard 0.2)
 
 # Training configuration
 training:

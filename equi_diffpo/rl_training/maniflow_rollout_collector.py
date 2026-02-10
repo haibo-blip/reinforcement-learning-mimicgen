@@ -17,6 +17,14 @@ from equi_diffpo.rl_training.rl_utils import compute_loss_mask
 
 
 @dataclass
+class FpoActionInfo:
+    """FPO-specific action information for importance ratio computation."""
+    loss_eps: np.ndarray        # [n_samples, horizon, action_dim] - sampled noise
+    loss_t: np.ndarray          # [n_samples, 1] - sampled timesteps
+    initial_cfm_loss: np.ndarray  # [n_samples] - CFM loss at collection time
+
+
+@dataclass
 class ManiFlowRolloutStep:
     """Single step in rollout following RLinf EmbodiedRolloutResult pattern."""
 
@@ -58,6 +66,11 @@ class ManiFlowRolloutBatch:
     x_means: Optional[np.ndarray] = None
     x_stds: Optional[np.ndarray] = None
 
+    # FPO-specific fields [n_chunk_steps, batch_size, ...]
+    fpo_loss_eps: Optional[np.ndarray] = None        # [n_chunk_steps, batch_size, n_samples, horizon, action_dim]
+    fpo_loss_t: Optional[np.ndarray] = None          # [n_chunk_steps, batch_size, n_samples, 1]
+    fpo_initial_cfm_loss: Optional[np.ndarray] = None  # [n_chunk_steps, batch_size, n_samples]
+
     # Loss masking [n_chunk_steps, batch_size, action_chunk] - optional fields with defaults
     loss_mask: Optional[np.ndarray] = None
     loss_mask_sum: Optional[np.ndarray] = None
@@ -86,7 +99,8 @@ class ManiFlowRolloutBatch:
 
         # Convert other arrays
         for field_name in ['actions', 'rewards', 'dones', 'prev_logprobs', 'prev_values',
-                          'chains', 'denoise_inds', 'loss_mask', 'loss_mask_sum','x_stds','x_means']:
+                          'chains', 'denoise_inds', 'loss_mask', 'loss_mask_sum', 'x_stds', 'x_means',
+                          'fpo_loss_eps', 'fpo_loss_t', 'fpo_initial_cfm_loss']:
             if hasattr(self, field_name) and getattr(self, field_name) is not None:
                 result[field_name] = torch.from_numpy(getattr(self, field_name)).to(device)
 
@@ -201,6 +215,11 @@ class ManiFlowRolloutCollector:
         x_means = rl_data['x_means']                  # [n_steps, batch_size, N, horizon, action_dim]
         x_stds = rl_data['x_stds']                    # [n_steps, batch_size, N, horizon, action_dim]
 
+        # FPO-specific fields (optional, only present when loss_mode='fpo')
+        fpo_loss_eps = rl_data.get('fpo_loss_eps')           # [n_steps, batch_size, n_samples, horizon, action_dim]
+        fpo_loss_t = rl_data.get('fpo_loss_t')               # [n_steps, batch_size, n_samples, 1]
+        fpo_initial_cfm_loss = rl_data.get('fpo_initial_cfm_loss')  # [n_steps, batch_size, n_samples]
+
         n_steps = rl_data['total_steps']
         batch_size = rl_data['total_envs']
 
@@ -212,6 +231,10 @@ class ManiFlowRolloutCollector:
         print(f"  - Denoise inds shape: {denoise_inds.shape}")
         print(f"  - x_means shape: {x_means.shape}")
         print(f"  - x_stds shape: {x_stds.shape}")
+        if fpo_loss_eps is not None:
+            print(f"  - FPO loss_eps shape: {fpo_loss_eps.shape}")
+            print(f"  - FPO loss_t shape: {fpo_loss_t.shape}")
+            print(f"  - FPO initial_cfm_loss shape: {fpo_initial_cfm_loss.shape}")
 
         # Create truncations (not tracked by default)
         truncations = np.zeros_like(dones)
@@ -300,6 +323,9 @@ class ManiFlowRolloutCollector:
             denoise_inds=denoise_inds,
             x_means=x_means,
             x_stds=x_stds,
+            fpo_loss_eps=fpo_loss_eps,
+            fpo_loss_t=fpo_loss_t,
+            fpo_initial_cfm_loss=fpo_initial_cfm_loss,
         )
 
     def collect_rollouts(self, num_episodes: Optional[int] = None, num_envs: Optional[int] = None) -> Tuple[ManiFlowRolloutBatch, List[str]]:

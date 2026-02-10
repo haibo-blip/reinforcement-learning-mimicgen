@@ -134,6 +134,11 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
                  # Canonicalization for SE(3) equivariance
                  use_canonicalization: bool = False,
                  canonicalization_mode: str = "se3",  # "se3" or "translation_only"
+                 # FPO (Flow Policy Optimization) parameters
+                 loss_mode: str = "gaussian",  # "gaussian" (standard PPO) or "fpo" (Flow Policy Optimization)
+                 fpo_n_samples_per_action: int = 8,  # Number of (eps, t) samples per action for FPO
+                 fpo_average_losses_before_exp: bool = True,  # Average CFM losses before exp (more stable)
+                 fpo_discretize_t: bool = True,  # Use discrete timesteps from flow schedule
                  **kwargs):
         super().__init__()
 
@@ -146,6 +151,12 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         self.safe_get_logprob = safe_get_logprob
         self.joint_logprob = joint_logprob
         self.global_step = 0  # For noise annealing
+
+        # FPO parameters
+        self.loss_mode = loss_mode
+        self.fpo_n_samples_per_action = fpo_n_samples_per_action
+        self.fpo_average_losses_before_exp = fpo_average_losses_before_exp
+        self.fpo_discretize_t = fpo_discretize_t
 
         # Parse shape_meta
         action_shape = shape_meta['action']['shape']
@@ -273,12 +284,17 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
 
         cprint(f"[ManiFlowRLPointcloudPolicy] Initialized with:", "yellow")
         cprint(f"  - noise_method: {self.noise_method}", "yellow")
+        cprint(f"  - loss_mode: {self.loss_mode}", "yellow")
         cprint(f"  - horizon: {self.horizon}", "yellow")
         cprint(f"  - n_action_steps: {self.n_action_steps}", "yellow")
         cprint(f"  - n_obs_steps: {self.n_obs_steps}", "yellow")
         cprint(f"  - num_inference_steps: {self.num_inference_steps}", "yellow")
         cprint(f"  - add_value_head: {add_value_head}", "yellow")
         cprint(f"  - use_canonicalization: {self.use_canonicalization}", "yellow")
+        if self.loss_mode == "fpo":
+            cprint(f"  - fpo_n_samples_per_action: {self.fpo_n_samples_per_action}", "cyan")
+            cprint(f"  - fpo_average_losses_before_exp: {self.fpo_average_losses_before_exp}", "cyan")
+            cprint(f"  - fpo_discretize_t: {self.fpo_discretize_t}", "cyan")
         if self.use_canonicalization:
             cprint(f"  - canonicalization_mode: {self.canonicalization_mode}", "yellow")
         if add_value_head:
@@ -482,6 +498,114 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         obs_features = nobs_features.reshape(B, -1, Do)  # B, n_obs_steps*L, obs_feature_dim
 
         return obs_features
+
+    # ========= FPO (Flow Policy Optimization) methods =========
+    def _compute_cfm_loss(self,
+                          obs_features: torch.Tensor,
+                          action: torch.Tensor,
+                          eps: torch.Tensor,
+                          t: torch.Tensor) -> torch.Tensor:
+        """
+        Compute Conditional Flow Matching (CFM) loss for FPO.
+
+        This computes the MSE between predicted velocity and ground truth velocity
+        for a given (action, eps, t) tuple, following the reference FPO implementation.
+
+        Args:
+            obs_features: Observation features [B, n_obs_steps*L, obs_feature_dim]
+            action: Clean action (x_0) [B, horizon, action_dim]
+            eps: Sampled noise (x_1) [B, n_samples, horizon, action_dim]
+            t: Sampled timesteps [B, n_samples, 1]
+
+        Returns:
+            cfm_loss: CFM loss per sample [B, n_samples]
+        """
+        B, n_samples, horizon, action_dim = eps.shape
+        device = action.device
+
+        # Interpolate: x_t = t * eps + (1-t) * action
+        # t shape: [B, n_samples, 1] -> expand to [B, n_samples, horizon, action_dim]
+        t_expanded = t.unsqueeze(-1).expand(-1, -1, horizon, action_dim)  # [B, n_samples, horizon, action_dim]
+        action_expanded = action.unsqueeze(1).expand(-1, n_samples, -1, -1)  # [B, n_samples, horizon, action_dim]
+
+        x_t = t_expanded * eps + (1.0 - t_expanded) * action_expanded  # [B, n_samples, horizon, action_dim]
+
+        # Flatten batch and n_samples for model forward pass
+        # x_t: [B * n_samples, horizon, action_dim]
+        x_t_flat = x_t.reshape(B * n_samples, horizon, action_dim)
+        t_flat = t.squeeze(-1).reshape(B * n_samples)  # [B, n_samples, 1] -> [B * n_samples]
+
+        # Expand obs_features for n_samples: [B, ...] -> [B * n_samples, ...]
+        obs_features_flat = obs_features.unsqueeze(1).expand(-1, n_samples, -1, -1)
+        obs_features_flat = obs_features_flat.reshape(B * n_samples, obs_features.shape[1], obs_features.shape[2])
+
+        # Get velocity prediction from model
+        # model expects: sample [B, horizon, action_dim], timestep [B], vis_cond [B, L, D]
+        v_pred = self.model(
+            sample=x_t_flat,
+            timestep=t_flat,
+            target_t=torch.zeros_like(t_flat),  # target_t=0 for flow matching
+            vis_cond=obs_features_flat,
+            lang_cond=None
+        )  # [B * n_samples, horizon, action_dim]
+
+        # Ground truth velocity: v_gt = eps - action (from x_1 to x_0)
+        v_gt = eps - action_expanded  # [B, n_samples, horizon, action_dim]
+        v_gt_flat = v_gt.reshape(B * n_samples, horizon, action_dim)
+
+        # MSE loss per sample, averaged over horizon and action_dim
+        cfm_loss_flat = ((v_pred - v_gt_flat) ** 2).mean(dim=[-1, -2])  # [B * n_samples]
+        cfm_loss = cfm_loss_flat.reshape(B, n_samples)  # [B, n_samples]
+
+        return cfm_loss
+
+    def _compute_fpo_action_info(self,
+                                  obs_features: torch.Tensor,
+                                  action: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Compute FPO action info for importance ratio computation.
+
+        Samples (eps, t) pairs and computes initial CFM loss, which will be
+        compared against current CFM loss during training to compute the
+        importance ratio rho_s = exp(initial_cfm_loss - current_cfm_loss).
+
+        Args:
+            obs_features: Observation features [B, n_obs_steps*L, obs_feature_dim]
+            action: Sampled action (normalized, canonical frame) [B, horizon, action_dim]
+
+        Returns:
+            Dictionary containing:
+            - 'fpo_loss_eps': Sampled noise [B, n_samples, horizon, action_dim]
+            - 'fpo_loss_t': Sampled timesteps [B, n_samples, 1]
+            - 'fpo_initial_cfm_loss': Initial CFM loss [B, n_samples]
+        """
+        B = action.shape[0]
+        horizon = action.shape[1]
+        action_dim = action.shape[2]
+        n_samples = self.fpo_n_samples_per_action
+        device = action.device
+
+        # Sample eps ~ N(0, I)
+        loss_eps = torch.randn(B, n_samples, horizon, action_dim, device=device)
+
+        # Sample t (discrete or uniform)
+        if self.fpo_discretize_t:
+            # Use discrete timesteps from flow schedule
+            timesteps = torch.linspace(1, 0, self.num_inference_steps + 1, device=device)[:-1]  # [N]
+            t_indices = torch.randint(0, self.num_inference_steps, (B, n_samples), device=device)
+            loss_t = timesteps[t_indices].unsqueeze(-1)  # [B, n_samples, 1]
+        else:
+            # Uniform sampling
+            loss_t = torch.rand(B, n_samples, 1, device=device)
+
+        # Compute initial CFM loss
+        initial_cfm_loss = self._compute_cfm_loss(obs_features, action, loss_eps, loss_t)
+
+        return {
+            'fpo_loss_eps': loss_eps,
+            'fpo_loss_t': loss_t,
+            'fpo_initial_cfm_loss': initial_cfm_loss,
+        }
 
     def sample_noise(self, shape: tuple, device: torch.device) -> torch.Tensor:
         """
@@ -1049,6 +1173,17 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
                 'x_stds': sample_result['x_stds'],
             })
 
+            # Add FPO data if loss_mode is 'fpo'
+            if self.loss_mode == 'fpo':
+                # Use the normalized action (nsample) for FPO computation
+                # since CFM loss should be computed in normalized space
+                fpo_info = self._compute_fpo_action_info(vis_cond, nsample)
+                result.update({
+                    'fpo_loss_eps': fpo_info['fpo_loss_eps'],
+                    'fpo_loss_t': fpo_info['fpo_loss_t'],
+                    'fpo_initial_cfm_loss': fpo_info['fpo_initial_cfm_loss'],
+                })
+
         return result
 
     def sample_actions(self,
@@ -1084,7 +1219,7 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         # Extract action steps for final output
         action_steps = result['action']  # Already extracted by predict_action
 
-        return {
+        output = {
             'actions': action_steps,
             'action_pred': result['action_pred'],
             'chains': result['chains'],
@@ -1095,6 +1230,16 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             'x_stds': result['x_stds'],
         }
 
+        # Add FPO data if available
+        if self.loss_mode == 'fpo' and 'fpo_loss_eps' in result:
+            output.update({
+                'fpo_loss_eps': result['fpo_loss_eps'],
+                'fpo_loss_t': result['fpo_loss_t'],
+                'fpo_initial_cfm_loss': result['fpo_initial_cfm_loss'],
+            })
+
+        return output
+
     def default_forward(self,
                        data: dict,
                        **kwargs) -> Dict[str, torch.Tensor]:
@@ -1102,13 +1247,16 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         Default forward pass for RL training (like OpenPI).
 
         Expects chains and denoise_inds in data, computes logprobs, values, entropy.
+        For FPO mode, computes current_cfm_loss instead of logprobs.
 
         Args:
             data: Dictionary with 'observation', 'chains', 'denoise_inds'
+                  For FPO: also 'fpo_loss_eps', 'fpo_loss_t'
             **kwargs: Additional arguments (compute_values, etc.)
 
         Returns:
             Dictionary with 'logprobs', 'values', 'entropy'
+            For FPO: 'current_cfm_loss' instead of 'logprobs'
         """
         # Extract arguments (like OpenPI)
         # Set noise mode for training (recomputing logprobs needs train mode)
@@ -1118,6 +1266,11 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
         denoise_inds = data["denoise_inds"]  # [B, N]
         observation = data["observation"]
 
+        # FPO mode: compute current CFM loss
+        if self.loss_mode == 'fpo':
+            return self._default_forward_fpo(data, compute_values)
+
+        # Gaussian mode: compute logprobs (original behavior)
         # Get log probs, values, entropy from chains (like OpenPI)
         # value_t is now [B] (single value per sample, not per denoising step)
         log_probs, value_t, entropy = self.get_log_prob_value(
@@ -1149,6 +1302,60 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
             "logprobs": log_probs,
             "values": value_t,  # [B] - single value per sample
             "entropy": entropy,
+        }
+
+    def _default_forward_fpo(self,
+                              data: dict,
+                              compute_values: bool) -> Dict[str, torch.Tensor]:
+        """
+        FPO-specific forward pass for RL training.
+
+        Computes current CFM loss using stored (eps, t) pairs from rollout collection.
+
+        Args:
+            data: Dictionary with 'observation', 'chains', 'fpo_loss_eps', 'fpo_loss_t'
+            compute_values: Whether to compute state values
+
+        Returns:
+            Dictionary with 'current_cfm_loss', 'values', 'entropy'
+        """
+        observation = data["observation"]
+        chains = data["chains"]  # [B, N+1, horizon, action_dim]
+        fpo_loss_eps = data["fpo_loss_eps"]  # [B, n_samples, horizon, action_dim]
+        fpo_loss_t = data["fpo_loss_t"]  # [B, n_samples, 1]
+
+        B = chains.shape[0]
+
+        # Get the final action from chains (x_0, the clean data)
+        action = chains[:, -1]  # [B, horizon, action_dim]
+
+        # === Canonicalization: transform observation to gripper frame ===
+        if self.use_canonicalization:
+            T_gripper, T_gripper_inv = self.get_canonicalization_transform(observation)
+            # Clone observation to avoid modifying buffer data
+            observation = {k: v.clone() if torch.is_tensor(v) else v for k, v in observation.items()}
+            observation['point_cloud'] = self.canonicalize_point_cloud(
+                observation['point_cloud'], T_gripper_inv)
+
+        # Encode observations (now in canonical frame if canonicalization enabled)
+        obs_features = self.encode_observations(observation)
+
+        # Compute current CFM loss
+        current_cfm_loss = self._compute_cfm_loss(obs_features, action, fpo_loss_eps, fpo_loss_t)
+
+        # Compute value (if requested)
+        if compute_values:
+            value_t = self.compute_value(obs_features)  # [B]
+        else:
+            value_t = torch.zeros(B, device=action.device)
+
+        # Entropy is not used in FPO (no Gaussian assumption)
+        entropy = torch.zeros(B, 1, device=action.device)
+
+        return {
+            "current_cfm_loss": current_cfm_loss,  # [B, n_samples]
+            "values": value_t,  # [B]
+            "entropy": entropy,  # [B, 1]
         }
 
     def get_logprobs(self,
