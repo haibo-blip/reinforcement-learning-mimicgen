@@ -41,7 +41,7 @@
     ```
 1. Installing missing package
     ```bash
-    bash install_missing_packages.sh
+    bash scripts/install/install_missing_packages.sh
     ```
 
 
