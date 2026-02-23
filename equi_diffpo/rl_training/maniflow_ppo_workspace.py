@@ -442,11 +442,9 @@ class ManiFlowPPOTrainer:
                 # Compute losses
                 loss_dict = self._compute_ppo_loss(mini_batch, policy_outputs, critic_only=critic_only)
 
-                # Scale loss by actual batch size relative to expected effective batch
-                # This handles partial batches correctly:
-                # - Full batch (32): weight = 32 / (32 * 64) = 1/64
-                # - Partial batch (10): weight = 10 / (32 * 64) = 10/2048
-                weight = actual_batch_size / (self.config.batch_size * accumulate_steps)
+                # Scale loss by actual batch size relative to total samples
+                # so gradient is the mean over all rollout samples regardless of accumulate_steps
+                weight = actual_batch_size / total_samples
                 scaled_loss = loss_dict['total_loss'] * weight
                 scaled_loss.backward()
 
