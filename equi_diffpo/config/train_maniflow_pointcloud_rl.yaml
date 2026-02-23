@@ -17,10 +17,6 @@ n_action_steps: 8
 n_latency_steps: 0
 dataset_obs_steps: ${n_obs_steps}
 
-# Derived: total samples per rollout (for single-update gradient accumulation)
-n_chunk_steps: ${eval:'int(${get_max_steps:${task_name}} / ${horizon}) + (1 if ${get_max_steps:${task_name}} % ${horizon} > 0 else 0)'}
-samples_per_rollout: ${eval:'${n_chunk_steps} * ${rl_training.train_n_episodes}'}
-
 # Dataset path (required by env_runner configuration)
 dataset_target: equi_diffpo.dataset.robomimic_replay_point_cloud_dataset.RobomimicReplayPointCloudDataset
 dataset_path: equi_diffpo/data/robomimic/datasets/${task_name}/${task_name}_voxel_abs.hdf5
@@ -93,8 +89,8 @@ rl_training:
   total_timesteps: 2000000
   num_envs: 16
   batch_size: 16
-  effective_batch_size: ${samples_per_rollout}  # = all rollout samples
-  gradient_accumulate_every: ${eval:'${samples_per_rollout} // ${rl_training.batch_size}'}  # accumulate all, single optimizer step
+  effective_batch_size: 999999
+  gradient_accumulate_every: 999999  # large number to accumulate all samples, single optimizer step
 
   # PPO hyperparameters
   learning_rate: 1.0e-5      # Actor learning rate
