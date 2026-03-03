@@ -71,6 +71,9 @@ class ManiFlowRolloutBatch:
     fpo_loss_t: Optional[np.ndarray] = None          # [n_chunk_steps, batch_size, n_samples, 1]
     fpo_initial_cfm_loss: Optional[np.ndarray] = None  # [n_chunk_steps, batch_size, n_samples]
 
+    # NFT: clean actions (final denoised x0) [n_chunk_steps, batch_size, horizon, action_dim]
+    actions_clean: Optional[np.ndarray] = None
+
     # Loss masking [n_chunk_steps, batch_size, action_chunk] - optional fields with defaults
     loss_mask: Optional[np.ndarray] = None
     loss_mask_sum: Optional[np.ndarray] = None
@@ -99,7 +102,7 @@ class ManiFlowRolloutBatch:
 
         # Convert other arrays
         for field_name in ['actions', 'rewards', 'dones', 'prev_logprobs', 'prev_values',
-                          'chains', 'denoise_inds', 'loss_mask', 'loss_mask_sum', 'x_stds', 'x_means',
+                          'chains', 'denoise_inds', 'actions_clean', 'loss_mask', 'loss_mask_sum', 'x_stds', 'x_means',
                           'fpo_loss_eps', 'fpo_loss_t', 'fpo_initial_cfm_loss']:
             if hasattr(self, field_name) and getattr(self, field_name) is not None:
                 result[field_name] = torch.from_numpy(getattr(self, field_name)).to(device)
@@ -220,6 +223,9 @@ class ManiFlowRolloutCollector:
         fpo_loss_t = rl_data.get('fpo_loss_t')               # [n_steps, batch_size, n_samples, 1]
         fpo_initial_cfm_loss = rl_data.get('fpo_initial_cfm_loss')  # [n_steps, batch_size, n_samples]
 
+        # NFT: extract clean actions (final denoised x0) from chains
+        actions_clean = chains[:, :, -1, :, :]  # [n_steps, batch_size, horizon, action_dim]
+
         n_steps = rl_data['total_steps']
         batch_size = rl_data['total_envs']
 
@@ -321,6 +327,7 @@ class ManiFlowRolloutCollector:
             loss_mask_sum=loss_mask_sum_np,
             chains=chains,
             denoise_inds=denoise_inds,
+            actions_clean=actions_clean,
             x_means=x_means,
             x_stds=x_stds,
             fpo_loss_eps=fpo_loss_eps,

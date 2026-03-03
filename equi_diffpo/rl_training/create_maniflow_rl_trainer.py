@@ -10,6 +10,7 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 import torch
 from .maniflow_ppo_workspace import ManiFlowPPOTrainer, PPOConfig
+from .maniflow_nft_workspace import ManiFlowNFTTrainer, NFTConfig
 from .maniflow_advantage_calculator import AdvantageConfig
 from equi_diffpo.policy.maniflow.maniflow_pointcloud_rl_policy import ManiFlowRLPointcloudPolicy
 from equi_diffpo.env_runner.robomimic_rl_runner import RobomimicRLRunner
@@ -323,6 +324,151 @@ def test_rl_trainer_creation():
         import traceback
         traceback.print_exc()
         return False
+
+
+def create_maniflow_nft_trainer_from_config(cfg: OmegaConf,
+                                            pretrained_policy_path: str = None,
+                                            device: str = "cuda") -> ManiFlowNFTTrainer:
+    """
+    Create ManiFlow NFT trainer from Hydra config.
+
+    Args:
+        cfg: Hydra configuration
+        pretrained_policy_path: Path to pretrained policy checkpoint
+        device: Training device
+
+    Returns:
+        ManiFlowNFTTrainer: Ready-to-use NFT trainer
+    """
+
+    # 1. Create RL policy from config
+    policy: ManiFlowRLPointcloudPolicy = hydra.utils.instantiate(cfg.policy)
+
+    # 2. Load pretrained weights if provided
+    if pretrained_policy_path:
+        print(f"Loading pretrained policy from: {pretrained_policy_path}")
+        checkpoint = torch.load(pretrained_policy_path, map_location=device)
+        if 'state_dicts' in checkpoint and 'model' in checkpoint['state_dicts']:
+            state_dict = checkpoint['state_dicts']['model']
+        elif 'policy_state_dict' in checkpoint:
+            state_dict = checkpoint['policy_state_dict']
+        elif 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+        else:
+            state_dict = checkpoint
+
+        missing, unexpected = policy.load_state_dict(state_dict, strict=False)
+        if missing:
+            print(f"Missing keys (will be initialized randomly): {missing}")
+        if unexpected:
+            print(f"Unexpected keys (ignored): {unexpected}")
+
+        normalizer_keys = [k for k in state_dict.keys() if k.startswith('normalizer.')]
+        normalizer_loaded_from_checkpoint = len(normalizer_keys) > 0
+    else:
+        normalizer_loaded_from_checkpoint = False
+
+    # 3. Get RL config
+    rl_config = cfg.get('rl_training', {})
+
+    # 4. Create RL-compatible environment runner
+    env_runner_config = OmegaConf.to_container(cfg.task.env_runner, resolve=True)
+    env_runner_config['_target_'] = "equi_diffpo.env_runner.robomimic_rl_runner.RobomimicRLRunner"
+    env_runner_config['collect_rl_data'] = True
+
+    eval_n_episodes = rl_config.get('eval_n_episodes', 50)
+    train_n_episodes = rl_config.get('train_n_episodes', 50)
+    original_n_test = env_runner_config.get('n_test', 50)
+    if eval_n_episodes != original_n_test:
+        env_runner_config['n_test'] = eval_n_episodes
+    if train_n_episodes > eval_n_episodes:
+        print(f"Training will cycle through {eval_n_episodes} seeds {math.ceil(train_n_episodes / eval_n_episodes)} times")
+
+    env_runner_config = OmegaConf.create(env_runner_config)
+    env_runner = hydra.utils.instantiate(env_runner_config, output_dir="./rl_outputs")
+
+    # 5. Set up normalizer
+    if normalizer_loaded_from_checkpoint:
+        print("Using normalizer from checkpoint")
+    else:
+        normalizer = get_normalizer_from_dataset(cfg)
+        if normalizer is not None:
+            policy.set_normalizer(normalizer)
+
+    # 6. Create NFT config
+    nft_config = NFTConfig(
+        total_timesteps=rl_config.get('total_timesteps', 1000000),
+        num_envs=rl_config.get('num_envs', 14),
+        batch_size=rl_config.get('batch_size', 32),
+        gradient_accumulate_every=rl_config.get('gradient_accumulate_every', 64),
+
+        # NFT-specific
+        beta=rl_config.get('beta', 1.0),
+        beta_kl=rl_config.get('beta_kl', 0.01),
+        adv_clip_max=rl_config.get('adv_clip_max', 5.0),
+        num_train_timesteps=rl_config.get('num_train_timesteps', 1),
+        old_model_decay=rl_config.get('old_model_decay', 0.5),
+        old_model_decay_rate=rl_config.get('old_model_decay_rate', 0.001),
+
+        # Learning rates
+        learning_rate=rl_config.get('learning_rate', 1e-5),
+        value_lr=rl_config.get('value_lr', 1e-4),
+        max_grad_norm=rl_config.get('max_grad_norm', 0.5),
+
+        # Critic
+        value_coef=rl_config.get('value_coef', 0.5),
+        clip_range=rl_config.get('clip_range', 0.2),
+        critic_warmup_rollouts=rl_config.get('critic_warmup_rollouts', 4),
+        critic_warmup_epochs=rl_config.get('critic_warmup_epochs', 3),
+
+        # LR schedule
+        lr_schedule=rl_config.get('lr_schedule', 'linear'),
+        warmup_steps=rl_config.get('warmup_steps', 10000),
+
+        # Logging and checkpointing
+        eval_interval=rl_config.get('eval_interval', 3),
+        log_interval=rl_config.get('log_interval', 10),
+        save_interval=rl_config.get('save_interval', 100),
+        wandb_project=cfg.get('logging', {}).get('project', 'maniflow_rl'),
+        wandb_run_name=cfg.get('logging', {}).get('name', 'nft_training'),
+
+        # Rollout video logging
+        rollout_video_interval=rl_config.get('rollout_video_interval', 20),
+        n_rollout_videos=rl_config.get('n_rollout_videos', 4),
+
+        # Episode counts
+        train_n_episodes=rl_config.get('train_n_episodes', 50),
+        eval_n_episodes=rl_config.get('eval_n_episodes', 50),
+
+        # Environment parameters
+        action_chunk_size=cfg.get('n_action_steps', 8),
+        obs_chunk_size=cfg.get('n_obs_steps', 2),
+    )
+
+    # 7. Create advantage config (GAE, unchanged)
+    advantage_config = AdvantageConfig(
+        gamma=rl_config.get('gamma', 0.99),
+        gae_lambda=rl_config.get('gae_lambda', 0.95),
+        advantage_type="gae",
+        normalize_advantages=True,
+    )
+
+    # 8. Create NFT trainer
+    trainer = ManiFlowNFTTrainer(
+        policy=policy,
+        env_runner=env_runner,
+        config=nft_config,
+        advantage_config=advantage_config,
+        device=device,
+        use_wandb=True
+    )
+
+    print(f"ManiFlow NFT Trainer created from config")
+    print(f"  - Policy parameters: {sum(p.numel() for p in policy.parameters()):,}")
+    print(f"  - NFT beta: {nft_config.beta}")
+    print(f"  - Action chunk size: {cfg.get('n_action_steps', 8)}")
+
+    return trainer
 
 
 if __name__ == "__main__":

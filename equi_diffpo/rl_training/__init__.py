@@ -22,6 +22,12 @@ from .maniflow_ppo_workspace import (
     create_maniflow_ppo_trainer
 )
 
+from .maniflow_nft_workspace import (
+    ManiFlowNFTTrainer,
+    NFTConfig,
+    create_maniflow_nft_trainer
+)
+
 from .create_maniflow_rl_trainer import (
     create_maniflow_rl_trainer_from_config,
     create_maniflow_rl_trainer_simple
@@ -49,6 +55,11 @@ __all__ = [
     'ManiFlowPPOTrainer',
     'PPOConfig',
     'create_maniflow_ppo_trainer',
+
+    # NFT training
+    'ManiFlowNFTTrainer',
+    'NFTConfig',
+    'create_maniflow_nft_trainer',
 
     # Factory functions
     'create_maniflow_rl_trainer_from_config',

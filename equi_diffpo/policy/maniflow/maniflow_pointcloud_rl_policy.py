@@ -460,6 +460,26 @@ class ManiFlowRLPointcloudPolicy(BaseImagePolicy):
 
         return self.value_head(obs_features_pooled).squeeze(-1)  # [B]
 
+    def predict_v(self, obs_features: torch.Tensor, xt: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """
+        Predict velocity v from pre-encoded obs features and noisy action.
+        Used by NFT trainer for v_old, v_fwd, v_ref forward passes.
+
+        Args:
+            obs_features: [B, L, D] from encode_observations()
+            xt: [B, horizon, action_dim] noisy action
+            t: [B] timestep in [0, 1]
+        Returns:
+            v_pred: [B, horizon, action_dim]
+        """
+        return self.model(
+            sample=xt,
+            timestep=t,
+            target_t=torch.zeros_like(t),
+            vis_cond=obs_features,
+            lang_cond=None
+        )
+
     def get_current_noise_level(self) -> float:
         """Get current noise level (with annealing if enabled)."""
         if not self.noise_anneal:

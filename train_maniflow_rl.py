@@ -22,7 +22,10 @@ import logging
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from equi_diffpo.rl_training.create_maniflow_rl_trainer import create_maniflow_rl_trainer_from_config
+from equi_diffpo.rl_training.create_maniflow_rl_trainer import (
+    create_maniflow_rl_trainer_from_config,
+    create_maniflow_nft_trainer_from_config
+)
 
 # Max steps for each task (required for config interpolation)
 max_steps = {
@@ -210,16 +213,25 @@ def main(cfg: DictConfig) -> None:
             logger.info("💻 Using CPU (GPU not available)")
 
         # Create the RL trainer from config
-        logger.info("🏗️  Creating ManiFlow RL trainer...")
         pretrained_policy_path = OmegaConf.select(cfg, 'policy.checkpoint')
+        trainer_type = OmegaConf.select(cfg, 'rl_training.trainer_type', default='ppo')
 
-        trainer = create_maniflow_rl_trainer_from_config(
-            cfg=cfg,
-            pretrained_policy_path=pretrained_policy_path,
-            device=device
-        )
-
-        logger.info("✅ RL trainer created successfully!")
+        if trainer_type == 'nft':
+            logger.info("🏗️  Creating ManiFlow NFT trainer...")
+            trainer = create_maniflow_nft_trainer_from_config(
+                cfg=cfg,
+                pretrained_policy_path=pretrained_policy_path,
+                device=device
+            )
+            logger.info("✅ NFT trainer created successfully!")
+        else:
+            logger.info("🏗️  Creating ManiFlow PPO trainer...")
+            trainer = create_maniflow_rl_trainer_from_config(
+                cfg=cfg,
+                pretrained_policy_path=pretrained_policy_path,
+                device=device
+            )
+            logger.info("✅ PPO trainer created successfully!")
 
         # Start training
         logger.info("🚀 Starting RL training...")
