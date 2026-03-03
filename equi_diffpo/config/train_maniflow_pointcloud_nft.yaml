@@ -46,9 +46,9 @@ policy:
   diffusion_timestep_embed_dim: 128
   diffusion_target_t_embed_dim: 128
 
-  # RL exploration noise (same as PPO version)
-  noise_level: 0.1
-  noise_anneal: true
+  # RL exploration noise (disabled for NFT - deterministic rollout)
+  noise_level: 0.0
+  noise_anneal: false
   noise_params: [0.1, 0.2, 100]
 
   # Point cloud encoder parameters
@@ -86,7 +86,7 @@ rl_training:
   total_timesteps: 2000000
   num_envs: 16
   batch_size: 16
-  gradient_accumulate_every: 999999  # accumulate all samples, single optimizer step
+  gradient_accumulate_every: 128  # accumulate 128 minibatches per optimizer step
 
   # Learning rates
   learning_rate: 1.0e-5      # Actor LR (~pretrain/10)
@@ -95,9 +95,8 @@ rl_training:
 
   # NFT-specific parameters
   beta: 1.0                  # NFT blend strength (1.0 = conservative)
-  beta_kl: 0.01              # KL regularization weight
+  beta_kl: 0.0001            # KL regularization weight (same as DiffusionNFT)
   adv_clip_max: 5.0          # Advantage clipping range
-  num_train_timesteps: 9     # Timesteps sampled per training step (match num_inference_steps)
   old_model_decay: 0.5       # Max EMA decay for old_model
   old_model_decay_rate: 0.001  # Decay ramp-up rate per rollout
 

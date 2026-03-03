@@ -166,6 +166,7 @@ class ManiFlowNFTTrainer:
         # Training state
         self.global_step = 0
         self.rollout_count = 0
+        self.gradient_step_count = 0  # Tracks optimizer steps (like DiffusionNFT global_step)
 
         # Metrics tracking
         self.training_metrics = {
@@ -354,6 +355,7 @@ class ManiFlowNFTTrainer:
                     self.optimizer.step()
                     self.optimizer.zero_grad()
                     num_updates += 1
+                    self.gradient_step_count += 1
                     accumulated_count = 0
 
             if critic_only and n_epochs > 1:
@@ -369,6 +371,7 @@ class ManiFlowNFTTrainer:
             self.optimizer.step()
             self.optimizer.zero_grad()
             num_updates += 1
+            self.gradient_step_count += 1
 
         # Average statistics
         for key in stats.keys():
@@ -377,7 +380,7 @@ class ManiFlowNFTTrainer:
         if self.lr_scheduler is not None:
             self.lr_scheduler.step()
 
-        self.policy.set_global_step(self.rollout_count)
+        self.policy.set_global_step(self.gradient_step_count)
         self.policy.eval()
 
         print(f"  NFT training completed: {num_updates} optimizer steps, {num_minibatches} minibatches")
@@ -538,8 +541,8 @@ class ManiFlowNFTTrainer:
         }
 
     def _update_old_model(self):
-        """EMA update of old_model toward current policy.model."""
-        decay = min(self.rollout_count * self.config.old_model_decay_rate,
+        """EMA update of old_model toward current policy.model (like DiffusionNFT)."""
+        decay = min(self.gradient_step_count * self.config.old_model_decay_rate,
                     self.config.old_model_decay)
         with torch.no_grad():
             for old_p, new_p in zip(self.old_model.parameters(),
@@ -622,7 +625,8 @@ class ManiFlowNFTTrainer:
                 'train/critic_lr': critic_lr,
                 'train/global_step': self.global_step,
                 'train/rollout_count': self.rollout_count,
-                'train/old_model_decay': min(self.rollout_count * self.config.old_model_decay_rate,
+                'train/gradient_step_count': self.gradient_step_count,
+                'train/old_model_decay': min(self.gradient_step_count * self.config.old_model_decay_rate,
                                               self.config.old_model_decay),
                 'perf/fps': fps,
                 'perf/rollout_time': rollout_time,
@@ -646,6 +650,7 @@ class ManiFlowNFTTrainer:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'global_step': self.global_step,
             'rollout_count': self.rollout_count,
+            'gradient_step_count': self.gradient_step_count,
             'config': self.config.__dict__,
             'training_metrics': self.training_metrics,
             'rollout_metrics': self.rollout_metrics,
