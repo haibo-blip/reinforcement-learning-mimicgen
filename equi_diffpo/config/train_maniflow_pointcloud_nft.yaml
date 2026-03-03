@@ -29,7 +29,7 @@ policy:
   horizon: ${horizon}
   n_action_steps: ${n_action_steps}
   n_obs_steps: ${n_obs_steps}
-  num_inference_steps: 4
+  num_inference_steps: 9
   obs_as_global_cond: True
 
   # DiTX Transformer architecture
@@ -97,7 +97,7 @@ rl_training:
   beta: 1.0                  # NFT blend strength (1.0 = conservative)
   beta_kl: 0.01              # KL regularization weight
   adv_clip_max: 5.0          # Advantage clipping range
-  num_train_timesteps: 1     # Timesteps sampled per training step
+  num_train_timesteps: 9     # Timesteps sampled per training step (match num_inference_steps)
   old_model_decay: 0.5       # Max EMA decay for old_model
   old_model_decay_rate: 0.001  # Decay ramp-up rate per rollout
 

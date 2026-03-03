@@ -459,10 +459,9 @@ class ManiFlowNFTTrainer:
         r = (adv_clipped / adv_clip_max) / 2.0 + 0.5  # [B]
         r = r.clamp(0, 1)
 
-        for j in range(self.config.num_train_timesteps):
-            # Sample random discrete timestep per batch element
-            t_indices = torch.randint(0, N, (B,), device=device)
-            t = timestep_schedule[t_indices]  # [B]
+        for j in range(N):
+            # Iterate over all discrete timesteps (same as DiffusionNFT)
+            t = timestep_schedule[j].expand(B)  # [B]
             t_exp = t.view(B, 1, 1)  # [B, 1, 1]
 
             # Synthesize noisy input: xt = (1-t)*x0 + t*noise
@@ -517,8 +516,8 @@ class ManiFlowNFTTrainer:
             kl_loss_accum += kl_loss
 
         # Average over timesteps
-        nft_loss_accum /= self.config.num_train_timesteps
-        kl_loss_accum /= self.config.num_train_timesteps
+        nft_loss_accum /= N
+        kl_loss_accum /= N
 
         # Apply loss mask
         if loss_mask is not None:
