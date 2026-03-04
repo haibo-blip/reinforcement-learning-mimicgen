@@ -15,6 +15,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
 import wandb
@@ -482,8 +483,8 @@ class ManiFlowNFTTrainer:
                     vis_cond=obs_features_detached, lang_cond=None
                 )
 
-            # v_fwd: current policy (has gradient)
-            v_fwd = self.policy.predict_v(obs_features, xt, t)
+            # v_fwd: current policy (has gradient, checkpointed to save memory)
+            v_fwd = torch_checkpoint(self.policy.predict_v, obs_features, xt, t, use_reentrant=False)
 
             # v_ref: frozen pretrained base
             with torch.no_grad():
